@@ -9,14 +9,8 @@ workflows:
         script: |
           flutter clean
           flutter pub get
-
-      - name: Clean CocoaPods
-        script: |
-          cd ios
-          rm -rf Pods Podfile.lock
-          pod repo update
-          pod install --repo-update
-          cd -
+          flutter --version
+          flutter precache --ios
 
       - name: Build iOS (release, no codesign)
         script: |
@@ -30,6 +24,4 @@ workflows:
           cp -R Runner.app Payload/
           /usr/bin/zip -yr "Runner.zip" Payload
           mv "Runner.zip" "$CM_BUILD_DIR/Runner.ipa"
-
-    artifacts:
-      - $CM_BUILD_DIR/Runner.ipa
+    

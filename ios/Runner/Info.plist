@@ -23,9 +23,13 @@
   <key>LSRequiresIPhoneOS</key>
   <true/>
 
-  <!-- Chỉ dùng LaunchScreen -->
+  <!-- Launch screen -->
   <key>UILaunchStoryboardName</key>
   <string>LaunchScreen</string>
+
+  <!-- Dùng Main.storyboard để khởi tạo FlutterViewController -->
+  <key>UIMainStoryboardFile</key>
+  <string>Main</string>
 
   <key>UISupportedInterfaceOrientations</key>
   <array>
@@ -41,9 +45,9 @@
     <string>UIInterfaceOrientationLandscapeRight</string>
   </array>
 
-  <!-- Quyền cần thiết -->
+  <!-- Quyền -->
   <key>NSCameraUsageDescription</key>
-  <string>Ứng dụng cần quyền truy cập camera để chụp ảnh bệnh lá cà phê.</string>
+  <string>Ứng dụng cần quyền truy cập camera để chụp ảnh nhận diện bệnh lá cà phê.</string>
   <key>NSPhotoLibraryUsageDescription</key>
   <string>Cho phép ứng dụng truy cập thư viện ảnh.</string>
   <key>NSPhotoLibraryAddUsageDescription</key>
@@ -51,7 +55,7 @@
   <key>NSLocalNetworkUsageDescription</key>
   <string>Ứng dụng cần truy cập mạng cục bộ để kết nối ROS.</string>
 
-  <!-- Cho phép ws:// http:// trong LAN để ROS -->
+  <!-- Cho phép http/ws trong LAN (ROS ws://192.168.x.x) -->
   <key>NSAppTransportSecurity</key>
   <dict>
     <key>NSAllowsArbitraryLoads</key><true/>

@@ -8,41 +8,34 @@ project 'Runner', {
   'Release' => :release,
 }
 
+# Lấy FLUTTER_ROOT từ Generated.xcconfig (được tạo sau flutter pub get)
 def flutter_root
-  # Đọc FLUTTER_ROOT từ file do Flutter tạo sau khi `flutter pub get`
-  generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
-  unless File.exist?(generated_xcode_build_settings_path)
+  generated = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+  unless File.exist?(generated)
     raise "Generated.xcconfig must exist. Run `flutter pub get` and try again."
   end
-  File.foreach(generated_xcode_build_settings_path) do |line|
-    match = line.match(/FLUTTER_ROOT\=(.*)/)
-    return match[1].strip if match
+  File.foreach(generated) do |line|
+    m = line.match(/FLUTTER_ROOT\=(.*)/)
+    return m[1].strip if m
   end
   raise "FLUTTER_ROOT not found in Generated.xcconfig. Run `flutter pub get` and try again."
 end
 
-# Require podhelper.rb theo đường dẫn chính xác từ FLUTTER_ROOT
 require File.expand_path(File.join(flutter_root, 'packages', 'flutter_tools', 'bin', 'podhelper'), __FILE__)
 
-# Thiết lập CocoaPods cho Flutter
 flutter_ios_podfile_setup
 
 target 'Runner' do
-  # Bắt buộc cho plugin iOS hiện đại
   use_frameworks! :linkage => :static
   use_modular_headers!
-
-  # Cài tất cả pods của Flutter và plugins
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
 end
 
 post_install do |installer|
   installer.pods_project.targets.each do |target|
-    # Thêm build settings của Flutter vào từng target
     flutter_additional_ios_build_settings(target)
     target.build_configurations.each do |config|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
-      # Tránh cảnh báo arch trên simulator (tuỳ chọn)
       config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = 'arm64'
     end
   end
