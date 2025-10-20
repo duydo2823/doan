@@ -2,85 +2,69 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleDevelopmentRegion</key>
-  <string>$(DEVELOPMENT_LANGUAGE)</string>
-  <key>CFBundleDisplayName</key>
-  <string>App3</string>
-  <key>CFBundleExecutable</key>
-  <string>$(EXECUTABLE_NAME)</string>
-  <key>CFBundleIdentifier</key>
-  <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-  <key>CFBundleInfoDictionaryVersion</key>
-  <string>6.0</string>
-  <key>CFBundleName</key>
-  <string>app3</string>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>CFBundleShortVersionString</key>
-  <string>$(FLUTTER_BUILD_NAME)</string>
-  <key>CFBundleSignature</key>
-  <string>????</string>
-  <key>CFBundleVersion</key>
-  <string>$(FLUTTER_BUILD_NUMBER)</string>
-  <key>LSRequiresIPhoneOS</key>
-  <true/>
-  <key>UILaunchStoryboardName</key>
-  <string>LaunchScreen</string>
-  <key>UIMainStoryboardFile</key>
-  <string>Main</string>
-  <key>UISupportedInterfaceOrientations</key>
-  <array>
-    <string>UIInterfaceOrientationPortrait</string>
-    <string>UIInterfaceOrientationLandscapeLeft</string>
-    <string>UIInterfaceOrientationLandscapeRight</string>
-  </array>
-  <key>UISupportedInterfaceOrientations~ipad</key>
-  <array>
-    <string>UIInterfaceOrientationPortrait</string>
-    <string>UIInterfaceOrientationPortraitUpsideDown</string>
-    <string>UIInterfaceOrientationLandscapeLeft</string>
-    <string>UIInterfaceOrientationLandscapeRight</string>
-  </array>
-  <key>CADisableMinimumFrameDurationOnPhone</key>
-  <true/>
-  <key>UIApplicationSupportsIndirectInputEvents</key>
-  <true/>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>App3</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>app3</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(FLUTTER_BUILD_NAME)</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>CFBundleVersion</key>
+	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UILaunchStoryboardName</key>
+	<string>LaunchScreen</string>
+	<key>UIMainStoryboardFile</key>
+	<string>Main</string>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
 
-  <!-- ====== BỔ SUNG QUYỀN RIÊNG TƯ / MẠNG ====== -->
-  <!-- Camera/Micro -->
-  <key>NSCameraUsageDescription</key>
-  <string>Ứng dụng cần dùng camera để chụp và gửi hình ảnh.</string>
-  <key>NSMicrophoneUsageDescription</key>
-  <string>Ứng dụng cần micro khi ghi hình có âm thanh.</string>
+	<!-- ✅ Thêm các quyền cần thiết cho camera và ảnh -->
+	<key>NSCameraUsageDescription</key>
+	<string>Ứng dụng cần sử dụng camera để chụp lá cà phê phục vụ nhận diện bệnh.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Ứng dụng cần truy cập thư viện ảnh để chọn ảnh lá cà phê.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Ứng dụng cần quyền lưu ảnh kết quả nhận diện vào thư viện ảnh.</string>
 
-  <!-- Thư viện ảnh (nếu có lưu/đọc ảnh) -->
-  <key>NSPhotoLibraryUsageDescription</key>
-  <string>Ứng dụng cần quyền truy cập thư viện ảnh.</string>
-  <key>NSPhotoLibraryAddUsageDescription</key>
-  <string>Ứng dụng cần quyền lưu ảnh/video vào thư viện.</string>
+	<!-- Nếu bạn có quay video có âm thanh -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Ứng dụng cần micro khi quay video.</string>
 
-  <!-- iOS 14+: truy cập LAN để nói chuyện với ROS -->
-  <key>NSLocalNetworkUsageDescription</key>
-  <string>Ứng dụng cần truy cập mạng cục bộ để kết nối ROS.</string>
+	<!-- ✅ Cho phép kết nối ROS qua HTTP không bảo mật -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 
-  <!-- ATS: cho phép http/ws nếu rosbridge chạy không có HTTPS -->
-  <key>NSAppTransportSecurity</key>
-  <dict>
-    <!-- Cách nhanh để test: mở toàn bộ. Khi ổn rồi, siết theo domain/IP ở dưới -->
-    <key>NSAllowsArbitraryLoads</key>
-    <true/>
-
-    <!-- Khuyến nghị: thay thế bằng exception theo IP/host ROS của bạn
-    <key>NSExceptionDomains</key>
-    <dict>
-      <key>192.168.1.50</key>
-      <dict>
-        <key>NSTemporaryExceptionAllowsInsecureHTTPLoads</key><true/>
-        <key>NSIncludesSubdomains</key><true/>
-      </dict>
-    </dict>
-    -->
-  </dict>
-  <!-- =========================================== -->
+	<!-- Flutter defaults -->
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
 </dict>
 </plist>
