@@ -1,0 +1,41 @@
+workflows:
+  ios-release:
+    name: iOS Release Build
+    max_build_duration: 60
+    environment:
+      flutter: stable           # hoặc "3.24.0" nếu bạn muốn cố định
+      xcode: latest
+      vars:
+        APP_NAME: "Runner"
+    scripts:
+      - name: Flutter clean & get
+        script: |
+          flutter clean
+          flutter pub get
+
+      # Build iOS ở release, KHÔNG ký (Codemagic máy Mac làm giúp)
+      - name: Build iOS release (no codesign)
+        script: |
+          flutter build ios --release --no-codesign
+
+      # Đóng gói thành IPA: Payload/Runner.app -> Runner.ipa
+      - name: Package IPA
+        script: |
+          cd build/ios/iphoneos
+          rm -rf Payload
+          mkdir Payload
+          cp -R Runner.app Payload/
+          # nén chuẩn zip (recursive, preserve symlink)
+          /usr/bin/zip -yr "${APP_NAME}.zip" Payload
+          mv "${APP_NAME}.zip" "$CM_ARTIFACTS/${APP_NAME}.ipa"
+
+    artifacts:
+      - $CM_ARTIFACTS/*.ipa
+
+    publishing:
+      email:
+        recipients:
+          - duydo2823@email.com     # tuỳ chọn: nhận mail kèm link tải .ipa
+        notify:
+          success: true
+          failure: true
