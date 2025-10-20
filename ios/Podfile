@@ -8,24 +8,27 @@ project 'Runner', {
   'Release' => :release,
 }
 
-# Thiết lập Flutter CocoaPods
+# <<< BẮT BUỘC: nạp podhelper.rb của Flutter >>>
+require File.expand_path(File.join('..', 'Flutter', 'podhelper'), __FILE__)
+
+# Thiết lập CocoaPods cho Flutter
 flutter_ios_podfile_setup
 
 target 'Runner' do
-  # BẮT BUỘC cho plugin iOS hiện nay để tránh lỗi header Flutter.h
+  # Cần cho plugin iOS hiện đại (image_picker_ios, permission_handler_apple, …)
   use_frameworks! :linkage => :static
   use_modular_headers!
 
-  # Cài tất cả pods của Flutter/plugins
+  # Cài toàn bộ pods của Flutter & plugins
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
 end
 
 post_install do |installer|
   installer.pods_project.targets.each do |target|
-    # Bắt buộc: thêm build settings của Flutter (search path, v.v.)
+    # Thêm build settings của Flutter vào targets
     flutter_additional_ios_build_settings(target)
 
-    # Khớp iOS minimum
+    # Đồng bộ iOS minimum
     target.build_configurations.each do |config|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
     end
