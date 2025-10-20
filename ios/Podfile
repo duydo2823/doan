@@ -1,3 +1,39 @@
+# ios/Podfile
+
+platform :ios, '12.0'  # hoặc '13.0' nếu bạn muốn
+
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+project 'Runner', {
+  'Debug' => :debug,
+  'Profile' => :release,
+  'Release' => :release,
+}
+
+def flutter_root
+  generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+  unless File.exist?(generated_xcode_build_settings_path)
+    raise "Generated.xcconfig must exist. Run `flutter pub get` and try again."
+  end
+  File.foreach(generated_xcode_build_settings_path) do |line|
+    matches = line.match(/FLUTTER_ROOT\=(.*)/)
+    return matches[1].strip if matches
+  end
+  raise "FLUTTER_ROOT not found in Generated.xcconfig."
+end
+
+require File.expand_path(File.join(flutter_root, 'packages', 'flutter_tools', 'bin', 'podhelper'), __FILE__)
+
+flutter_ios_podfile_setup
+
+target 'Runner' do
+  use_frameworks!
+  use_modular_headers!
+
+  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+end
+
+# Bật các quyền cho permission_handler (camera, ảnh)
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     target.build_configurations.each do |config|
@@ -6,6 +42,8 @@ post_install do |installer|
         'PERMISSION_CAMERA=1',
         'PERMISSION_PHOTOS=1',
         'PERMISSION_PHOTOS_ADD_ONLY=1',
+        # Nếu quay video có âm thanh thì mở thêm:
+        # 'PERMISSION_MICROPHONE=1',
       ]
     end
   end
