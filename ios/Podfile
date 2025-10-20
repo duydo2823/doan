@@ -8,27 +8,40 @@ project 'Runner', {
   'Release' => :release,
 }
 
-# <<< BẮT BUỘC: nạp podhelper.rb của Flutter >>>
-require File.expand_path(File.join('..', 'Flutter', 'podhelper'), __FILE__)
+# ---- Tìm và require podhelper.rb của Flutter ----
+def find_flutter_podhelper
+  podhelper_local = File.expand_path(File.join('..', 'Flutter', 'podhelper'), __FILE__)
+  return podhelper_local if File.exist?(podhelper_local)
 
-# Thiết lập CocoaPods cho Flutter
+  # Fallback: lấy trong Flutter SDK nếu file local chưa sinh ra
+  flutter_root = `flutter --version --machine 2>/dev/null`
+                  .match(/"flutterRoot":"([^"]+)"/)&.captures&.first
+  if flutter_root
+    helper = File.join(flutter_root, 'packages', 'flutter_tools', 'bin', 'podhelper.rb')
+    return helper if File.exist?(helper)
+  end
+  nil
+end
+
+podhelper_path = find_flutter_podhelper
+raise "Cannot find Flutter podhelper.rb. Run `flutter pub get` (hoặc `flutter build ios`) trước." unless podhelper_path
+require podhelper_path
+# -------------------------------------------------
+
 flutter_ios_podfile_setup
 
 target 'Runner' do
-  # Cần cho plugin iOS hiện đại (image_picker_ios, permission_handler_apple, …)
+  # cần cho plugin iOS (image_picker_ios, permission_handler_apple, ...)
   use_frameworks! :linkage => :static
   use_modular_headers!
 
-  # Cài toàn bộ pods của Flutter & plugins
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
 end
 
 post_install do |installer|
+  # Chú ý: hàm này nhận đối số là installer
+  flutter_additional_ios_build_settings(installer)
   installer.pods_project.targets.each do |target|
-    # Thêm build settings của Flutter vào targets
-    flutter_additional_ios_build_settings(target)
-
-    # Đồng bộ iOS minimum
     target.build_configurations.each do |config|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
     end
