@@ -7,8 +7,24 @@ workflows:
       xcode: latest
       vars:
         APP_NAME: "Runner"
+
     scripts:
-      - name: Clean CocoaPods
+      # 1) Chuẩn bị Flutter cho iOS (tải SDK iOS vào cache build máy Mac)
+      - name: Flutter precache (iOS)
+        script: |
+          set -e
+          flutter --version
+          flutter precache --ios
+
+      # 2) Clean & pub get (phải chạy TRƯỚC khi đụng CocoaPods)
+      - name: Flutter clean & get
+        script: |
+          set -e
+          flutter clean
+          flutter pub get
+
+      # 3) Clean Pods & pod install (BÂY GIỜ mới làm)
+      - name: CocoaPods install
         script: |
           set -e
           rm -rf ios/Pods ios/Podfile.lock
@@ -16,24 +32,27 @@ workflows:
           pod repo update
           pod install
           cd ..
-      - name: Flutter clean & get
-        script: |
-          flutter clean
-          flutter pub get
+
+      # 4) Build iOS (no codesign)
       - name: Build iOS (release, no codesign)
         script: |
           set -e
           flutter build ios --release --no-codesign
+
+      # 5) Đóng gói IPA
       - name: Package IPA
         script: |
+          set -e
           cd build/ios/iphoneos
           rm -rf Payload
           mkdir Payload
           cp -R Runner.app Payload/
           /usr/bin/zip -yr "${APP_NAME}.zip" Payload
           mv "${APP_NAME}.zip" "$CM_ARTIFACTS/${APP_NAME}.ipa"
+
     artifacts:
       - $CM_ARTIFACTS/*.ipa
+
     publishing:
       email:
         recipients:
