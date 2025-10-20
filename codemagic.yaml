@@ -1,33 +1,50 @@
 workflows:
   ios-release:
     name: iOS Release Build
+    instance_type: mac_mini_m2
     max_build_duration: 60
+
     environment:
-      flutter: stable           # hoặc "3.24.0" nếu bạn muốn cố định
+      flutter: stable          # hoặc pin phiên bản cụ thể: "3.24.0"
       xcode: latest
-      vars:
-        APP_NAME: "Runner"
+
     scripts:
-      - name: Flutter clean & get
+      - name: Flutter clean & pub get
         script: |
+          set -e
+          flutter --version
           flutter clean
           flutter pub get
 
-      # Build iOS ở release, KHÔNG ký (Codemagic máy Mac làm giúp)
-      - name: Build iOS release (no codesign)
+      - name: Build iOS (release, no codesign)
         script: |
+          set -e
           flutter build ios --release --no-codesign
 
-      # Đóng gói thành IPA: Payload/Runner.app -> Runner.ipa
+      # Đóng gói thành IPA: Payload/Runner.app -> $CM_ARTIFACTS/Runner.ipa
       - name: Package IPA
         script: |
-          cd build/ios/iphoneos
+          set -euo pipefail
+
+          APP_NAME="Runner"
+          # Tìm đường dẫn Runner.app sinh ra bởi Flutter
+          APP_DIR="$(/usr/bin/find "$CM_BUILD_DIR/build/ios/iphoneos" -maxdepth 1 -type d -name "${APP_NAME}.app" -print -quit)"
+          if [[ -z "$APP_DIR" ]]; then
+            echo "❌ ${APP_NAME}.app not found in build/ios/iphoneos"
+            ls -la "$CM_BUILD_DIR/build/ios/iphoneos" || true
+            exit 1
+          fi
+
+          cd "$(dirname "$APP_DIR")"
           rm -rf Payload
-          mkdir Payload
-          cp -R Runner.app Payload/
-          # nén chuẩn zip (recursive, preserve symlink)
-          /usr/bin/zip -yr "${APP_NAME}.zip" Payload
+          mkdir -p Payload
+          cp -R "${APP_NAME}.app" Payload/
+
+          # Nén chuẩn zip, ghi ra đúng thư mục artifacts (được phép ghi)
+          /usr/bin/zip -qry "${APP_NAME}.zip" Payload
           mv "${APP_NAME}.zip" "$CM_ARTIFACTS/${APP_NAME}.ipa"
+
+          echo "✅ IPA saved to: $CM_ARTIFACTS/${APP_NAME}.ipa"
 
     artifacts:
       - $CM_ARTIFACTS/*.ipa
@@ -35,7 +52,7 @@ workflows:
     publishing:
       email:
         recipients:
-          - duydo2823@email.com     # tuỳ chọn: nhận mail kèm link tải .ipa
+          - duydo2823@gmail.com   # đổi sang email bạn muốn nhận
         notify:
           success: true
           failure: true
