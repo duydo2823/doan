@@ -1,29 +1,20 @@
 workflows:
   ios-release:
     name: iOS Release Build
-    max_build_duration: 60
     environment:
       flutter: stable
       xcode: latest
-      vars:
-        APP_NAME: "Runner"
-
+      vars: { APP_NAME: "Runner" }
     scripts:
-      # 1) Chuẩn bị Flutter cho iOS (tải SDK iOS vào cache build máy Mac)
       - name: Flutter precache (iOS)
         script: |
           set -e
-          flutter --version
           flutter precache --ios
-
-      # 2) Clean & pub get (phải chạy TRƯỚC khi đụng CocoaPods)
       - name: Flutter clean & get
         script: |
           set -e
           flutter clean
           flutter pub get
-
-      # 3) Clean Pods & pod install (BÂY GIỜ mới làm)
       - name: CocoaPods install
         script: |
           set -e
@@ -32,32 +23,21 @@ workflows:
           pod repo update
           pod install
           cd ..
-
-      # 4) Build iOS (no codesign)
       - name: Build iOS (release, no codesign)
         script: |
           set -e
           flutter build ios --release --no-codesign
-
-      # 5) Đóng gói IPA
       - name: Package IPA
         script: |
           set -euo pipefail
-
           cd build/ios/iphoneos
           rm -rf Payload
           mkdir Payload
           cp -R Runner.app Payload/
-
-          # Tạo file zip chuẩn IPA
           /usr/bin/zip -yr "${APP_NAME}.zip" Payload
-
-          # Chọn thư mục export: ưu tiên CM_ARTIFACTS nếu có, không thì dùng CM_EXPORT_DIR
           ART_DIR="${CM_ARTIFACTS:-$CM_EXPORT_DIR}"
           mkdir -p "$ART_DIR"
-
-          # Đổi đuôi zip -> ipa và đặt vào thư mục export
           mv "${APP_NAME}.zip" "$ART_DIR/${APP_NAME}.ipa"
-
-          echo "IPA exported to: $ART_DIR/${APP_NAME}.ipa"
-      
+    artifacts:
+      - $CM_EXPORT_DIR/*.ipa
+      - $CM_ARTIFACTS/*.ipa

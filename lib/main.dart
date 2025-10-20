@@ -1,4 +1,3 @@
-// lib/main.dart
 import 'package:flutter/material.dart';
 
 void main() {
@@ -11,11 +10,9 @@ class MinimalApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
+    return const MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Sanity Check',
-      theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: Colors.green), useMaterial3: true),
-      home: const Scaffold(
+      home: Scaffold(
         body: Center(
           child: Text(
             '✅ Flutter is running',

@@ -1,4 +1,3 @@
-// ios/Runner/AppDelegate.swift
 import UIKit
 import Flutter
 
