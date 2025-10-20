@@ -1,28 +1,35 @@
-scripts:
-  - name: Flutter clean & pub get
-    script: |
-      flutter clean
-      flutter pub get
-      flutter --version
-      flutter precache --ios
+workflows:
+  ios-release:
+    name: iOS Release Build
+    environment:
+      flutter: stable
+      xcode: latest
+    scripts:
+      - name: Flutter clean & pub get
+        script: |
+          flutter clean
+          flutter pub get
 
-  - name: CocoaPods (optional clean)
-    script: |
-      cd ios
-      rm -rf Pods Podfile.lock
-      pod repo update
-      pod install --repo-update
-      cd -
+      - name: Clean CocoaPods
+        script: |
+          cd ios
+          rm -rf Pods Podfile.lock
+          pod repo update
+          pod install --repo-update
+          cd -
 
-  - name: Build iOS (release, no codesign)
-    script: |
-      flutter build ios --release --no-codesign
+      - name: Build iOS (release, no codesign)
+        script: |
+          flutter build ios --release --no-codesign
 
-  - name: Package IPA
-    script: |
-      cd build/ios/iphoneos
-      rm -rf Payload
-      mkdir Payload
-      cp -R Runner.app Payload/
-      /usr/bin/zip -yr "Runner.zip" Payload
-      mv "Runner.zip" "$CM_BUILD_DIR/Runner.ipa"
+      - name: Package IPA
+        script: |
+          cd build/ios/iphoneos
+          rm -rf Payload
+          mkdir Payload
+          cp -R Runner.app Payload/
+          /usr/bin/zip -yr "Runner.zip" Payload
+          mv "Runner.zip" "$CM_BUILD_DIR/Runner.ipa"
+
+    artifacts:
+      - $CM_BUILD_DIR/Runner.ipa
