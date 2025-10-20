@@ -1,5 +1,5 @@
+# ios/Podfile
 platform :ios, '13.0'
-
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
 
 project 'Runner', {
@@ -8,34 +8,26 @@ project 'Runner', {
   'Release' => :release,
 }
 
-def flutter_root
-  generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
-  unless File.exist?(generated_xcode_build_settings_path)
-    raise "Generated.xcconfig must exist. Run `flutter pub get` and try again."
-  end
-  File.foreach(generated_xcode_build_settings_path) do |line|
-    matches = line.match(/FLUTTER_ROOT\=(.*)/)
-    return matches[1].strip if matches
-  end
-  raise "FLUTTER_ROOT not found in Generated.xcconfig. Try `flutter pub get`."
-end
-
-require File.expand_path(File.join(flutter_root, 'packages', 'flutter_tools', 'bin', 'podhelper'), __FILE__)
-
+# Thiết lập Flutter CocoaPods
 flutter_ios_podfile_setup
 
 target 'Runner' do
+  # BẮT BUỘC cho plugin iOS hiện nay để tránh lỗi header Flutter.h
   use_frameworks! :linkage => :static
   use_modular_headers!
 
+  # Cài tất cả pods của Flutter/plugins
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
 end
 
 post_install do |installer|
   installer.pods_project.targets.each do |target|
+    # Bắt buộc: thêm build settings của Flutter (search path, v.v.)
+    flutter_additional_ios_build_settings(target)
+
+    # Khớp iOS minimum
     target.build_configurations.each do |config|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
-      config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = 'arm64'
     end
   end
 end
