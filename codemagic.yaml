@@ -5,7 +5,7 @@ workflows:
     max_build_duration: 60
 
     environment:
-      flutter: stable          # hoặc pin phiên bản cụ thể: "3.24.0"
+      flutter: stable
       xcode: latest
 
     scripts:
@@ -21,13 +21,14 @@ workflows:
           set -e
           flutter build ios --release --no-codesign
 
-      # Đóng gói thành IPA: Payload/Runner.app -> $CM_ARTIFACTS/Runner.ipa
       - name: Package IPA
         script: |
-          set -euo pipefail
+          # Chỉ fail khi lệnh lỗi & lỗi pipeline, KHÔNG fail vì biến unset
+          set -eo pipefail
 
           APP_NAME="Runner"
-          # Tìm đường dẫn Runner.app sinh ra bởi Flutter
+
+          # Tìm Runner.app được build
           APP_DIR="$(/usr/bin/find "$CM_BUILD_DIR/build/ios/iphoneos" -maxdepth 1 -type d -name "${APP_NAME}.app" -print -quit)"
           if [[ -z "$APP_DIR" ]]; then
             echo "❌ ${APP_NAME}.app not found in build/ios/iphoneos"
@@ -35,24 +36,31 @@ workflows:
             exit 1
           fi
 
+          # Chọn thư mục artifacts (tương thích cả 2 biến của Codemagic)
+          ARTIFACTS_DIR="${CM_ARTIFACTS:-${CM_EXPORT_DIR:-$HOME/artifacts}}"
+          mkdir -p "$ARTIFACTS_DIR"
+
+          # Đóng gói IPA
           cd "$(dirname "$APP_DIR")"
           rm -rf Payload
           mkdir -p Payload
           cp -R "${APP_NAME}.app" Payload/
 
-          # Nén chuẩn zip, ghi ra đúng thư mục artifacts (được phép ghi)
           /usr/bin/zip -qry "${APP_NAME}.zip" Payload
-          mv "${APP_NAME}.zip" "$CM_ARTIFACTS/${APP_NAME}.ipa"
+          mv "${APP_NAME}.zip" "${ARTIFACTS_DIR}/${APP_NAME}.ipa"
 
-          echo "✅ IPA saved to: $CM_ARTIFACTS/${APP_NAME}.ipa"
+          echo "✅ IPA saved to: ${ARTIFACTS_DIR}/${APP_NAME}.ipa"
 
     artifacts:
+      # Gom cả hai trường hợp đường dẫn artifacts
       - $CM_ARTIFACTS/*.ipa
+      - $CM_EXPORT_DIR/*.ipa
+      - $HOME/artifacts/*.ipa
 
     publishing:
       email:
         recipients:
-          - duydo2823@gmail.com   # đổi sang email bạn muốn nhận
+          - duydo2823@gmail.com
         notify:
           success: true
           failure: true
