@@ -1,30 +1,28 @@
+// lib/main.dart
 import 'package:flutter/material.dart';
-import 'intro_page.dart';
-import 'detection_page.dart';
-import 'solution_page.dart';
 
 void main() {
-  runApp(const CoffeeApp());
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const MinimalApp());
 }
 
-class CoffeeApp extends StatelessWidget {
-  const CoffeeApp({super.key});
+class MinimalApp extends StatelessWidget {
+  const MinimalApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Coffee Leaf Disease Detector',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.green),
-        useMaterial3: true,
+      title: 'Sanity Check',
+      theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: Colors.green), useMaterial3: true),
+      home: const Scaffold(
+        body: Center(
+          child: Text(
+            '✅ Flutter is running',
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.green),
+          ),
+        ),
       ),
-      initialRoute: '/',
-      routes: {
-        '/': (context) => const IntroPage(),
-        '/detect': (context) => const DetectionPage(),
-        '/solution': (context) => SolutionPage(),
-      },
     );
   }
 }

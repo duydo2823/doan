@@ -1,7 +1,8 @@
-import Flutter
+// ios/Runner/AppDelegate.swift
 import UIKit
+import Flutter
 
-@main
+@UIApplicationMain
 @objc class AppDelegate: FlutterAppDelegate {
   override func application(
     _ application: UIApplication,
