@@ -7,7 +7,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/services.dart';
 
-/// 🔗 Địa chỉ ROSBridge WebSocket — nhớ đổi đúng IP máy ROS thật của bạn
+/// Đổi theo IP rosbridge của bạn
 const String ROS_URL = 'ws://192.168.1.252:9090';
 
 class DetectionPage extends StatefulWidget {
@@ -25,7 +25,7 @@ class _DetectionPageState extends State<DetectionPage> {
   Uint8List? _annotatedJpeg;
   bool _sending = false;
 
-  String? _detectedDisease;
+  String? _detectedDisease; // null = chưa có; 'healthy' = không bệnh
   int _retryMs = 500;
 
   @override
@@ -36,14 +36,12 @@ class _DetectionPageState extends State<DetectionPage> {
 
   @override
   void dispose() {
-    try {
-      _ch?.sink.close();
-    } catch (_) {}
+    try { _ch?.sink.close(); } catch (_) {}
     _ch = null;
     super.dispose();
   }
 
-  // ================== ROS WebSocket ===================
+  // ================== WS ===================
   void _connect() {
     _status = 'Connecting...';
     if (mounted) setState(() {});
@@ -168,16 +166,13 @@ class _DetectionPageState extends State<DetectionPage> {
   // ============= Permissions + capture =============
   Future<bool> _ensureCameraPermission() async {
     var status = await Permission.camera.status;
-
     if (!status.isGranted) {
       status = await Permission.camera.request();
     }
-
     if (status.isPermanentlyDenied) {
       await openAppSettings();
       return false;
     }
-
     return status.isGranted;
   }
 
@@ -271,8 +266,7 @@ class _DetectionPageState extends State<DetectionPage> {
                 const SizedBox(width: 8),
                 _sending
                     ? const SizedBox(
-                  height: 18,
-                  width: 18,
+                  height: 18, width: 18,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
                     : const SizedBox.shrink(),
