@@ -15,7 +15,14 @@ workflows:
           flutter --version
           flutter clean
           flutter pub get
-
+      - name: Clean CocoaPods
+        script: |
+          set -e
+          rm -rf ios/Pods ios/Podfile.lock
+          cd ios
+          pod repo update
+          pod install
+          cd ..
       - name: Build iOS (release, no codesign)
         script: |
           set -e

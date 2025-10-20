@@ -1,6 +1,4 @@
-# ios/Podfile
-
-platform :ios, '12.0'  # hoặc '13.0' nếu bạn muốn
+platform :ios, '13.0'
 
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
 
@@ -27,22 +25,26 @@ require File.expand_path(File.join(flutter_root, 'packages', 'flutter_tools', 'b
 flutter_ios_podfile_setup
 
 target 'Runner' do
-  use_frameworks!
+  # Dùng static linkage để tránh lỗi header với nhiều plugin
+  use_frameworks! :linkage => :static
   use_modular_headers!
 
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
 end
 
-# Bật các quyền cho permission_handler (camera, ảnh)
+# Bật cờ cho permission_handler + fix một số cấu hình build
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
+      # Tránh lỗi simulator arm64 nếu có (không ảnh hưởng build device)
+      config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = 'arm64'
       config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= [
         '$(inherited)',
         'PERMISSION_CAMERA=1',
         'PERMISSION_PHOTOS=1',
         'PERMISSION_PHOTOS_ADD_ONLY=1',
-        # Nếu quay video có âm thanh thì mở thêm:
+        # Bật nếu bạn quay video có mic:
         # 'PERMISSION_MICROPHONE=1',
       ]
     end
