@@ -18,22 +18,22 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(FLUTTER_BUILD_NAME)</string>
-	<key>CFBundleSignature</key>
-	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
-	<key>UIMainStoryboardFile</key>
-	<string>Main</string>
+
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
@@ -42,26 +42,21 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 
-	<!-- ✅ Thêm các quyền cần thiết cho camera và ảnh -->
+	<!-- ✅ Quyền camera, ảnh -->
 	<key>NSCameraUsageDescription</key>
-	<string>Ứng dụng cần sử dụng camera để chụp lá cà phê phục vụ nhận diện bệnh.</string>
+	<string>Ứng dụng cần quyền truy cập camera để chụp ảnh bệnh lá cà phê</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Ứng dụng cần truy cập thư viện ảnh để chọn ảnh lá cà phê.</string>
+	<string>Cho phép ứng dụng truy cập thư viện ảnh để chọn ảnh</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
-	<string>Ứng dụng cần quyền lưu ảnh kết quả nhận diện vào thư viện ảnh.</string>
+	<string>Cho phép ứng dụng lưu ảnh đã chụp</string>
 
-	<!-- Nếu bạn có quay video có âm thanh -->
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Ứng dụng cần micro khi quay video.</string>
-
-	<!-- ✅ Cho phép kết nối ROS qua HTTP không bảo mật -->
+	<!-- ✅ Cho phép ROS (HTTP không bảo mật) -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
 
-	<!-- Flutter defaults -->
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>

@@ -1,4 +1,3 @@
-// lib/detection_page.dart
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
@@ -8,7 +7,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/services.dart';
 
-/// Đổi theo IP rosbridge của bạn
+/// 🔗 Địa chỉ ROSBridge WebSocket — nhớ đổi đúng IP máy ROS thật của bạn
 const String ROS_URL = 'ws://192.168.1.252:9090';
 
 class DetectionPage extends StatefulWidget {
@@ -26,9 +25,7 @@ class _DetectionPageState extends State<DetectionPage> {
   Uint8List? _annotatedJpeg;
   bool _sending = false;
 
-  /// null = chưa có kết quả; 'healthy' = không bệnh; còn lại = tên bệnh
   String? _detectedDisease;
-
   int _retryMs = 500;
 
   @override
@@ -46,7 +43,7 @@ class _DetectionPageState extends State<DetectionPage> {
     super.dispose();
   }
 
-  // ================== WS ===================
+  // ================== ROS WebSocket ===================
   void _connect() {
     _status = 'Connecting...';
     if (mounted) setState(() {});
@@ -65,7 +62,6 @@ class _DetectionPageState extends State<DetectionPage> {
       cancelOnError: false,
     );
 
-    // đợi 200ms rồi advertise/subscribe
     Future.delayed(const Duration(milliseconds: 200), () {
       _connected = true;
       _status = 'WS opened';
@@ -137,9 +133,7 @@ class _DetectionPageState extends State<DetectionPage> {
         _sending = false;
       }
     } catch (e) {
-      if (mounted) {
-        setState(() => _status = 'Parse err: $e');
-      }
+      if (mounted) setState(() => _status = 'Parse err: $e');
     }
   }
 
@@ -147,27 +141,19 @@ class _DetectionPageState extends State<DetectionPage> {
   String _prettyDetections(String jsonString) {
     try {
       final o = jsonDecode(jsonString);
-
-      // kỳ vọng: { detections: [ {cls: "...", score: 0.9}, ... ], latency_ms: 42 }
       final List dets = (o['detections'] as List?) ?? [];
       final double lat = (o['latency_ms'] ?? 0).toDouble();
 
       final buf = StringBuffer('Detections (${lat.toStringAsFixed(0)} ms):\n');
 
       if (dets.isEmpty) {
-        if (mounted) {
-          _detectedDisease = 'healthy';
-        }
+        if (mounted) _detectedDisease = 'healthy';
         buf.writeln('No disease detected');
       } else {
         dets.sort((a, b) => (b['score'] as num).compareTo(a['score'] as num));
         final top = dets.first;
         final name = top['cls'].toString();
-        // final score = (top['score'] as num).toStringAsFixed(2);
-
-        if (mounted) {
-          _detectedDisease = name;
-        }
+        if (mounted) _detectedDisease = name;
 
         for (final d in dets) {
           buf.writeln('- ${d["cls"]}  ${(d["score"] as num).toStringAsFixed(2)}');
@@ -180,9 +166,19 @@ class _DetectionPageState extends State<DetectionPage> {
   }
 
   // ============= Permissions + capture =============
-  Future<bool> _ensurePermissions() async {
-    final statuses = await [Permission.camera].request();
-    return statuses.values.every((s) => s.isGranted);
+  Future<bool> _ensureCameraPermission() async {
+    var status = await Permission.camera.status;
+
+    if (!status.isGranted) {
+      status = await Permission.camera.request();
+    }
+
+    if (status.isPermanentlyDenied) {
+      await openAppSettings();
+      return false;
+    }
+
+    return status.isGranted;
   }
 
   Future<void> _takePhotoAndSend() async {
@@ -191,8 +187,7 @@ class _DetectionPageState extends State<DetectionPage> {
       return;
     }
 
-    // xin quyền trước khi mở camera
-    final ok = await _ensurePermissions();
+    final ok = await _ensureCameraPermission();
     if (!ok) {
       if (mounted) setState(() => _status = 'Permission denied: camera');
       return;
@@ -235,13 +230,9 @@ class _DetectionPageState extends State<DetectionPage> {
         }
       });
     } on PlatformException catch (e) {
-      if (mounted) {
-        setState(() => _status = 'Camera error: ${e.code}');
-      }
+      if (mounted) setState(() => _status = 'Camera error: ${e.code}');
     } catch (e) {
-      if (mounted) {
-        setState(() => _status = 'Unexpected error: $e');
-      }
+      if (mounted) setState(() => _status = 'Unexpected error: $e');
     }
   }
 
@@ -278,10 +269,13 @@ class _DetectionPageState extends State<DetectionPage> {
               children: [
                 Expanded(child: Text(_status)),
                 const SizedBox(width: 8),
-                _sending ? const SizedBox(
-                  height: 18, width: 18,
+                _sending
+                    ? const SizedBox(
+                  height: 18,
+                  width: 18,
                   child: CircularProgressIndicator(strokeWidth: 2),
-                ) : const SizedBox.shrink(),
+                )
+                    : const SizedBox.shrink(),
               ],
             ),
             const SizedBox(height: 12),
