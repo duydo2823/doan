@@ -1,14 +1,7 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:typed_data';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:flutter/services.dart';
-
-/// Đổi theo IP rosbridge của bạn
-const String ROS_URL = 'ws://192.168.1.252:9090';
 
 class DetectionPage extends StatefulWidget {
   const DetectionPage({super.key});
@@ -18,299 +11,177 @@ class DetectionPage extends StatefulWidget {
 }
 
 class _DetectionPageState extends State<DetectionPage> {
-  WebSocketChannel? _ch;
-  bool _connected = false;
-  String _status = 'Disconnected';
-  String _resultText = '';
-  Uint8List? _annotatedJpeg;
-  bool _sending = false;
-
-  String? _detectedDisease; // null = chưa có; 'healthy' = không bệnh
-  int _retryMs = 500;
+  final ImagePicker _picker = ImagePicker();
+  XFile? _lastImage;
+  String _status = 'Sẵn sàng';
 
   @override
   void initState() {
     super.initState();
-    _connect();
+    _init();
   }
 
-  @override
-  void dispose() {
-    try { _ch?.sink.close(); } catch (_) {}
-    _ch = null;
-    super.dispose();
-  }
-
-  // ================== WS ===================
-  void _connect() {
-    _status = 'Connecting...';
-    if (mounted) setState(() {});
-
-    try {
-      _ch = WebSocketChannel.connect(Uri.parse(ROS_URL));
-    } catch (e) {
-      _scheduleReconnect('Connect error: $e');
+  Future<void> _init() async {
+    // iOS Simulator không có camera. Thông báo cho user biết.
+    if (!mounted) return;
+    if (Platform.isIOS && !await _isRealDevice()) {
+      setState(() {
+        _status =
+        'Đang chạy Simulator iOS: Simulator không hỗ trợ Camera. Hãy build lên iPhone thật.';
+      });
       return;
     }
 
-    _ch!.stream.listen(
-          (event) => _onMessage(event),
-      onDone: () => _scheduleReconnect('Closed'),
-      onError: (e) => _scheduleReconnect('WS error: $e'),
-      cancelOnError: false,
-    );
-
-    Future.delayed(const Duration(milliseconds: 200), () {
-      _connected = true;
-      _status = 'WS opened';
-      if (mounted) setState(() {});
-      _retryMs = 500;
-      _advertiseAndSubscribe();
-    });
-  }
-
-  void _scheduleReconnect(String reason) {
-    _connected = false;
-    _status = reason;
-    if (mounted) setState(() {});
-    _ch = null;
-
-    final delay = Duration(milliseconds: _retryMs.clamp(500, 5000));
-    _retryMs = (_retryMs * 2).clamp(500, 5000);
-    Future.delayed(delay, () {
-      if (mounted) _connect();
-    });
-  }
-
-  void _advertiseAndSubscribe() {
-    _send({
-      "op": "advertise",
-      "topic": "/app/image/compressed",
-      "type": "sensor_msgs/msg/CompressedImage",
-    });
-
-    _send({"op": "subscribe", "topic": "/app/detections_json"});
-    _send({"op": "subscribe", "topic": "/app/annotated/compressed"});
-  }
-
-  void _send(Object jsonObj) {
-    try {
-      _ch?.sink.add(jsonEncode(jsonObj));
-    } catch (e) {
-      _status = 'Send err: $e';
-      if (mounted) setState(() {});
+    final ok = await _ensurePermissions();
+    if (!mounted) return;
+    if (!ok) {
+      setState(() {
+        _status = 'Thiếu quyền Camera/Photos. Hãy cấp quyền trong Cài đặt.';
+      });
+      return;
     }
   }
 
-  void _onMessage(dynamic text) {
-    try {
-      final obj = jsonDecode(text as String);
-      final topic = obj['topic'] ?? '';
-
-      if (topic == '/app/detections_json') {
-        final data = obj['msg']?['data'] ?? '{}';
-        final pretty = _prettyDetections(data.toString());
-        _sending = false;
-        if (mounted) {
-          setState(() {
-            _resultText = pretty;
-            _status = 'Detections received';
-          });
-        }
-      } else if (topic == '/app/annotated/compressed') {
-        final b64 = obj['msg']?['data'];
-        if (b64 is String) {
-          final jpeg = base64Decode(b64);
-          if (mounted) {
-            setState(() {
-              _annotatedJpeg = jpeg;
-              _status = 'Annotated image received';
-            });
-          }
-        }
-        _sending = false;
-      }
-    } catch (e) {
-      if (mounted) setState(() => _status = 'Parse err: $e');
-    }
+  Future<bool> _isRealDevice() async {
+    // Cách đơn giản: nếu là iOS và có camera permission trạng thái 'restricted' trên sim,
+    // ta vẫn cứ cho biết là sim. Ở đây mình luôn trả true trên iOS device thật.
+    // Bạn có thể tích hợp device_info_plus để kiểm tra kỹ hơn.
+    return true;
   }
 
-  // ============= Parse detections JSON =============
-  String _prettyDetections(String jsonString) {
-    try {
-      final o = jsonDecode(jsonString);
-      final List dets = (o['detections'] as List?) ?? [];
-      final double lat = (o['latency_ms'] ?? 0).toDouble();
-
-      final buf = StringBuffer('Detections (${lat.toStringAsFixed(0)} ms):\n');
-
-      if (dets.isEmpty) {
-        if (mounted) _detectedDisease = 'healthy';
-        buf.writeln('No disease detected');
-      } else {
-        dets.sort((a, b) => (b['score'] as num).compareTo(a['score'] as num));
-        final top = dets.first;
-        final name = top['cls'].toString();
-        if (mounted) _detectedDisease = name;
-
-        for (final d in dets) {
-          buf.writeln('- ${d["cls"]}  ${(d["score"] as num).toStringAsFixed(2)}');
-        }
-      }
-      return buf.toString();
-    } catch (_) {
-      return jsonString;
-    }
-  }
-
-  // ============= Permissions + capture =============
-  Future<bool> _ensureCameraPermission() async {
-    var status = await Permission.camera.status;
-    if (!status.isGranted) {
-      status = await Permission.camera.request();
-    }
-    if (status.isPermanentlyDenied) {
+  Future<bool> _ensurePermissions() async {
+    // CAMERA
+    final cam = await Permission.camera.status;
+    if (cam.isDenied || cam.isRestricted) {
+      final res = await Permission.camera.request();
+      if (!res.isGranted) return false;
+    } else if (cam.isPermanentlyDenied) {
       await openAppSettings();
       return false;
     }
-    return status.isGranted;
-  }
 
-  Future<void> _takePhotoAndSend() async {
-    if (!_connected) {
-      if (mounted) setState(() => _status = 'Not connected to ROS');
-      return;
+    // PHOTOS (thư viện ảnh) — image_picker cần khi đọc/ghi ảnh
+    // Trên iOS 14+, có thể có Limited Access. Mặc định ta xin full.
+    var photos = await Permission.photos.status;
+    if (photos.isDenied || photos.isRestricted) {
+      final res = await Permission.photos.request();
+      if (!res.isGranted) return false;
+      photos = await Permission.photos.status;
+    } else if (photos.isPermanentlyDenied) {
+      await openAppSettings();
+      return false;
     }
 
-    final ok = await _ensureCameraPermission();
+    // Nếu quay video, bật microphone
+    // final mic = await Permission.microphone.request();
+
+    return true;
+  }
+
+  Future<void> _pickFromCamera() async {
+    final ok = await _ensurePermissions();
     if (!ok) {
-      if (mounted) setState(() => _status = 'Permission denied: camera');
+      setState(() {
+        _status = 'Thiếu quyền Camera/Photos. Hãy cấp quyền trong Cài đặt.';
+      });
       return;
     }
 
     try {
-      final picker = ImagePicker();
-      final XFile? file = await picker.pickImage(
-        source: ImageSource.camera,
-        imageQuality: 85,
-      );
-      if (file == null) return;
-
-      final bytes = await file.readAsBytes();
-      final b64 = base64Encode(bytes);
-
-      final pub = {
-        "op": "publish",
-        "topic": "/app/image/compressed",
-        "msg": {"format": "jpeg", "data": b64}
-      };
-      _send(pub);
-
-      if (mounted) {
-        setState(() {
-          _sending = true;
-          _status = 'Frame sent: ${bytes.length} bytes';
-          _resultText = 'Waiting for result...';
-          _annotatedJpeg = null;
-          _detectedDisease = null;
-        });
-      }
-
-      Future.delayed(const Duration(seconds: 5), () {
-        if (mounted && _sending) {
-          setState(() {
-            _sending = false;
-            _status = 'Timeout: no response from ROS';
-          });
-        }
+      final x = await _picker.pickImage(source: ImageSource.camera, preferredCameraDevice: CameraDevice.rear);
+      if (x == null) return;
+      setState(() {
+        _lastImage = x;
+        _status = 'Đã chụp ảnh: ${x.name}';
       });
-    } on PlatformException catch (e) {
-      if (mounted) setState(() => _status = 'Camera error: ${e.code}');
+
+      // TODO: gọi model/WS xử lý ảnh tại đây
+      // await _runDetection(File(x.path));
     } catch (e) {
-      if (mounted) setState(() => _status = 'Unexpected error: $e');
+      setState(() {
+        _status = 'Lỗi mở camera: $e';
+      });
     }
   }
 
-  // ================== UI ===================
+  Future<void> _pickFromGallery() async {
+    final ok = await _ensurePermissions();
+    if (!ok) {
+      setState(() {
+        _status = 'Thiếu quyền Photos. Hãy cấp quyền trong Cài đặt.';
+      });
+      return;
+    }
+
+    try {
+      final x = await _picker.pickImage(source: ImageSource.gallery);
+      if (x == null) return;
+      setState(() {
+        _lastImage = x;
+        _status = 'Đã chọn ảnh: ${x.name}';
+      });
+
+      // TODO: gọi model/WS xử lý ảnh tại đây
+      // await _runDetection(File(x.path));
+    } catch (e) {
+      setState(() {
+        _status = 'Lỗi mở thư viện ảnh: $e';
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final img = _annotatedJpeg;
+    final img = _lastImage;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Phát hiện bệnh lá cà phê'),
-        backgroundColor: Colors.green,
-        actions: [
-          IconButton(
-            tooltip: 'Xem giải pháp',
-            onPressed: _detectedDisease == null
-                ? null
-                : () {
-              Navigator.pushNamed(
-                context,
-                '/solution',
-                arguments: {'disease': _detectedDisease},
-              );
-            },
-            icon: const Icon(Icons.health_and_safety),
-          ),
-        ],
+        title: const Text('Detection Page'),
       ),
       body: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(16),
         child: Column(
           children: [
+            Text(_status, style: const TextStyle(fontSize: 14)),
+            const SizedBox(height: 12),
             Row(
               children: [
-                Expanded(child: Text(_status)),
-                const SizedBox(width: 8),
-                _sending
-                    ? const SizedBox(
-                  height: 18, width: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-                    : const SizedBox.shrink(),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: _pickFromCamera,
+                    icon: const Icon(Icons.photo_camera),
+                    label: const Text('Chụp bằng Camera'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _pickFromGallery,
+                    icon: const Icon(Icons.photo_library),
+                    label: const Text('Chọn từ Thư viện'),
+                  ),
+                ),
               ],
             ),
-            const SizedBox(height: 12),
-            ElevatedButton.icon(
-              onPressed: _takePhotoAndSend,
-              icon: const Icon(Icons.camera_alt),
-              label: const Text('Chụp & gửi lên ROS'),
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-            ),
-            const SizedBox(height: 12),
-            Expanded(
-              child: SingleChildScrollView(
-                child: Column(
-                  children: [
-                    if (img != null)
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: Image.memory(img),
-                      ),
-                    const SizedBox(height: 8),
-                    SelectableText(_resultText),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 8),
-            FilledButton.icon(
-              onPressed: _detectedDisease == null
-                  ? null
-                  : () {
-                Navigator.pushNamed(
-                  context,
-                  '/solution',
-                  arguments: {'disease': _detectedDisease},
-                );
-              },
-              icon: const Icon(Icons.medical_information),
-              label: const Text('Xem giải pháp'),
-            ),
+            const SizedBox(height: 16),
+            if (img != null) Expanded(child: _Preview(path: img.path)),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _Preview extends StatelessWidget {
+  final String path;
+  const _Preview({required this.path});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Image.file(
+        File(path),
+        fit: BoxFit.contain,
       ),
     );
   }
