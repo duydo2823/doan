@@ -1,42 +1,41 @@
-# ios/Podfile
+# Podfile cho Flutter iOS
 platform :ios, '13.0'
-ENV['COCOAPODS_DISABLE_STATS'] = 'true'
 
-project 'Runner', {
-  'Debug' => :debug,
-  'Profile' => :release,
-  'Release' => :release,
-}
-
-# Lấy FLUTTER_ROOT từ Generated.xcconfig (được tạo sau flutter pub get)
-def flutter_root
-  generated = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
-  unless File.exist?(generated)
-    raise "Generated.xcconfig must exist. Run `flutter pub get` and try again."
-  end
-  File.foreach(generated) do |line|
-    m = line.match(/FLUTTER_ROOT\=(.*)/)
-    return m[1].strip if m
-  end
-  raise "FLUTTER_ROOT not found in Generated.xcconfig. Run `flutter pub get` and try again."
-end
-
-require File.expand_path(File.join(flutter_root, 'packages', 'flutter_tools', 'bin', 'podhelper'), __FILE__)
-
-flutter_ios_podfile_setup
+# Đường dẫn helper của Flutter
+require_relative '../flutter/podhelper'
 
 target 'Runner' do
-  use_frameworks! :linkage => :static
+  use_frameworks!
   use_modular_headers!
-  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+
+  install_all_flutter_pods File.dirname(File.realpath(__FILE__))
+
+  # Nếu bạn dùng Firebase/khác có thể thêm pods ở đây
 end
 
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
+
     target.build_configurations.each do |config|
+      # Đảm bảo iOS 13.0 và exclude kiến trúc arm64 cho simulator
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
       config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = 'arm64'
+    end
+  end
+
+  # BẬT QUYỀN CHO permission_handler (rất quan trọng với iOS)
+  installer.pods_project.targets.each do |t|
+    if t.name == 'permission_handler_apple' || t.name == 'permission_handler'
+      t.build_configurations.each do |config|
+        defs = config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= ['$(inherited)']
+        # Bật đúng các quyền bạn dùng:
+        defs << 'PERMISSION_CAMERA=1'
+        defs << 'PERMISSION_PHOTOS=1'
+        defs << 'PERMISSION_PHOTOS_ADD_ONLY=1'
+        # Nếu quay video:
+        defs << 'PERMISSION_MICROPHONE=1'
+      end
     end
   end
 end
