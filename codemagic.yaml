@@ -1,31 +1,69 @@
-# codemagic.yaml — iOS IPA (no codesign)
+# codemagic.yaml — Build iOS IPA (unsigned) for Sideloadly
 workflows:
-  ios-ipa-release-no-sign:
-    name: iOS IPA Release (No codesign)
+  ios-ipa-no-codesign:
+    name: iOS IPA (No Codesign)
     instance_type: mac_mini_m2
     max_build_duration: 60
     environment:
       flutter: stable
+      # xcode: 16.2            # (tuỳ chọn) cố định version Xcode nếu bạn muốn
     cache:
       cache_paths:
         - $FLUTTER_ROOT/.pub-cache
         - ios/Pods
-        - ~/.gradle/caches
     scripts:
-      - name: Flutter pub get
-        script: flutter pub get
+      - name: Check Flutter & iOS toolchain
+        script: |
+          set -euxo pipefail
+          flutter --version
+          flutter doctor -v
+          flutter config --no-analytics
+
+      - name: Restore & Precache
+        script: |
+          set -euxo pipefail
+          flutter clean
+          flutter pub get
+          # Tải sẵn toolchain iOS để build ổn định
+          flutter precache --ios
 
       - name: Install CocoaPods
         script: |
+          set -euxo pipefail
           cd ios
+          # Dọn pod cũ nếu có xung đột
+          rm -rf Pods Podfile.lock
+          pod repo update
           pod install
           cd ..
 
-      - name: Build iOS IPA (release, no codesign)
-        # Tạo IPA không ký để bạn ký bằng Sideloadly sau
-        script: flutter build ipa --release --no-codesign
+      - name: Build unsigned IPA
+        script: |
+          set -euxo pipefail
+          # Build IPA không ký (dùng Sideloadly để ký sau)
+          flutter build ipa --release --no-codesign
+
+      - name: Verify artifacts
+        script: |
+          set -euxo pipefail
+          echo "Listing build outputs:"
+          ls -lah build/ios/ipa || true
+          # Kiểm tra có tạo IPA chưa
+          IPA_COUNT=$(ls build/ios/ipa/*.ipa 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$IPA_COUNT" = "0" ]; then
+            echo "❌ Không tìm thấy .ipa trong build/ios/ipa/"
+            echo "• Kiểm tra log bước 'Install CocoaPods' và 'Build unsigned IPA'"
+            echo "• Đảm bảo ios/Podfile đặt: platform :ios, '12.0'"
+            echo "• Đảm bảo Runner scheme tồn tại (Flutter mặc định có)"
+            exit 1
+          fi
+          echo "✅ Tạo IPA thành công."
 
     artifacts:
       - build/ios/ipa/*.ipa
-      - build/ios/ipa/*.xcarchive
       - build/ios/ipa/*.dSYM.zip
+      - build/ios/ipa/*.xcarchive
+
+    # Chỉ build khi bạn bấm Start build (không tự động)
+    triggering:
+      events: []
