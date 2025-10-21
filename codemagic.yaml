@@ -1,0 +1,93 @@
+# codemagic.yaml
+workflows:
+  android-debug-apk:
+    name: Android Debug APK
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+    scripts:
+      - name: Flutter pub get
+        script: flutter pub get
+      - name: Build debug APK
+        script: flutter build apk --debug
+    artifacts:
+      - build/app/outputs/flutter-apk/*.apk
+
+  android-release-aab:
+    name: Android Release AAB
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      groups:
+        - keystore_credentials        # tạo group này trong Codemagic
+    scripts:
+      - name: Flutter pub get
+        script: flutter pub get
+
+      - name: Write keystore to file from base64
+        script: |
+          echo "$CM_KEYSTORE" | base64 --decode > /tmp/keystore.jks
+          echo "CM_KEYSTORE_PATH=/tmp/keystore.jks" >> $CM_ENV
+
+      # Nếu app của bạn đọc keystore từ biến môi trường trong build.gradle như hướng dẫn mình đã đưa,
+      # bước dưới chỉ cần build AAB là đủ.
+      - name: Build release AAB
+        script: flutter build appbundle --release
+
+    artifacts:
+      - build/app/outputs/bundle/release/*.aab
+      - build/app/outputs/mapping/release/mapping.txt
+
+  ios-debug-ipa:
+    name: iOS Debug IPA (no codesign)
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+    scripts:
+      - name: Flutter pub get
+        script: flutter pub get
+      - name: Install CocoaPods
+        script: |
+          cd ios
+          pod install
+          cd ..
+      - name: Build iOS debug IPA (no codesign)
+        script: flutter build ipa --debug --no-codesign
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - build/ios/ipa/*.dSYM.zip
+
+  ios-release-ipa:
+    name: iOS Release IPA
+    instance_type: mac_mini_m2
+    environment:
+      flutter: stable
+      groups:
+        - app_store_connect           # nếu muốn tự động upload TestFlight
+    scripts:
+      - name: Flutter pub get
+        script: flutter pub get
+      - name: Install CocoaPods
+        script: |
+          cd ios
+          pod install
+          cd ..
+      - name: Build iOS release IPA
+        # Nếu bạn đã bật **Automatic code signing** trong UI Codemagic cho app này,
+        # lệnh dưới sẽ tạo IPA đã ký.
+        script: flutter build ipa --release
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - build/ios/ipa/*.dSYM.zip
+
+    # (Tuỳ chọn) Tự động upload TestFlight
+    # Bật khối 'publishing' này khi đã cấu hình API key trong group app_store_connect
+    # publishing:
+    #   app_store_connect:
+    #     api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+    #     key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+    #     issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+    #     submit_to_testflight: true
+    #     beta_groups:
+    #       - Internal Testers
