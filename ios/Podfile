@@ -1,16 +1,15 @@
-# Podfile cho Flutter iOS
+# Podfile for Flutter iOS (Codemagic-compatible)
 platform :ios, '13.0'
 
-# Đường dẫn helper của Flutter
-require_relative '../flutter/podhelper'
+# Locate Flutter SDK based on standard project layout
+flutter_root = File.expand_path('../../', __FILE__)
+require File.expand_path('packages/flutter_tools/bin/podhelper', flutter_root)
 
 target 'Runner' do
   use_frameworks!
   use_modular_headers!
 
-  install_all_flutter_pods File.dirname(File.realpath(__FILE__))
-
-  # Nếu bạn dùng Firebase/khác có thể thêm pods ở đây
+  install_all_flutter_pods(File.dirname(File.realpath(__FILE__)))
 end
 
 post_install do |installer|
@@ -18,23 +17,21 @@ post_install do |installer|
     flutter_additional_ios_build_settings(target)
 
     target.build_configurations.each do |config|
-      # Đảm bảo iOS 13.0 và exclude kiến trúc arm64 cho simulator
+      # Ensure iOS 13.0 and exclude arm64 for simulator to avoid arch issues
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
       config.build_settings['EXCLUDED_ARCHS[sdk=iphonesimulator*]'] = 'arm64'
     end
   end
 
-  # BẬT QUYỀN CHO permission_handler (rất quan trọng với iOS)
+  # Enable permissions for permission_handler on iOS
   installer.pods_project.targets.each do |t|
     if t.name == 'permission_handler_apple' || t.name == 'permission_handler'
       t.build_configurations.each do |config|
         defs = config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= ['$(inherited)']
-        # Bật đúng các quyền bạn dùng:
         defs << 'PERMISSION_CAMERA=1'
         defs << 'PERMISSION_PHOTOS=1'
         defs << 'PERMISSION_PHOTOS_ADD_ONLY=1'
-        # Nếu quay video:
-        defs << 'PERMISSION_MICROPHONE=1'
+        defs << 'PERMISSION_MICROPHONE=1' # bỏ dòng này nếu không quay video/ghi âm
       end
     end
   end
