@@ -112,6 +112,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       setState(() {
         _captured = x;
         _annotatedBytes = null;
+        _detections = null;
       });
       final bytes = await File(x.path).readAsBytes();
       _ros.publishJpeg(bytes);
@@ -120,6 +121,36 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       setState(() => _status = denied ? 'Permission denied: camera' : 'Camera error: ${e.code}');
     } catch (e) {
       setState(() => _status = 'Không mở được camera: $e');
+    }
+  }
+
+  // 🆕 Chọn ảnh từ thư viện và gửi lên ROS
+  Future<void> _pickFromGalleryAndSend() async {
+    if (!_ros.isConnected || !_lastPingOk) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Chưa kết nối ROS hoặc ROS không phản hồi.')),
+      );
+      return;
+    }
+    try {
+      final x = await _picker.pickImage(source: ImageSource.gallery);
+      if (x == null) return;
+      setState(() {
+        _captured = x;
+        _annotatedBytes = null;
+        _detections = null;
+      });
+      final bytes = await File(x.path).readAsBytes();
+      _ros.publishJpeg(bytes);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Đã gửi ảnh từ thư viện lên ROS')),
+        );
+      }
+    } on PlatformException catch (e) {
+      setState(() => _status = 'Không mở thư viện ảnh: ${e.code}');
+    } catch (e) {
+      setState(() => _status = 'Lỗi mở thư viện: $e');
     }
   }
 
@@ -192,17 +223,36 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
               const SizedBox(height: 12),
 
-              // ---- Chụp & gửi lên ROS ----
-              ElevatedButton.icon(
-                icon: const Icon(Icons.camera_alt),
-                label: const Text('Chụp & gửi lên ROS'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: canShoot ? const Color(0xFF43A047) : Colors.grey,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
-                  shape: const StadiumBorder(),
-                ),
-                onPressed: canShoot ? _captureAndSend : null,
+              // ---- Hàng nút chụp & chọn ảnh ----
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.camera_alt),
+                      label: const Text('Chụp & gửi lên ROS'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: canShoot ? const Color(0xFF43A047) : Colors.grey,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        shape: const StadiumBorder(),
+                      ),
+                      onPressed: canShoot ? _captureAndSend : null,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.photo_library_outlined),
+                      label: const Text('Chọn ảnh từ thư viện'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        shape: const StadiumBorder(),
+                        foregroundColor: const Color(0xFF2E7D32),
+                      ),
+                      onPressed: canShoot ? _pickFromGalleryAndSend : null,
+                    ),
+                  ),
+                ],
               ),
 
               const SizedBox(height: 12),
@@ -213,7 +263,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                   builder: (context, constraints) {
                     if (_captured == null && _annotatedBytes == null) {
                       return const Center(
-                        child: Text('Chưa có ảnh • Kết nối ROS và bấm “Chụp & gửi lên ROS”'),
+                        child: Text('Chưa có ảnh • Kết nối ROS và bấm “Chụp & gửi lên ROS” hoặc “Chọn ảnh từ thư viện”'),
                       );
                     }
 
@@ -379,7 +429,7 @@ class _BoxesPainter extends CustomPainter {
       );
       final tp = TextPainter(text: textSpan, textDirection: TextDirection.ltr);
       tp.layout();
-      final pad = 4.0;
+      const pad = 4.0;
       final labelRect = Rect.fromLTWH(
           rect.left, rect.top - (tp.height + pad * 2), tp.width + pad * 2, tp.height + pad * 2);
       canvas.drawRect(labelRect, fill);
