@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 class ResultPage extends StatelessWidget {
@@ -7,37 +8,36 @@ class ResultPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final String? imagePath =
-    ModalRoute.of(context)?.settings.arguments as String?;
+    final args = ModalRoute.of(context)?.settings.arguments as Map?;
+    final String? rawPath = args?['rawPath'] as String?;
+    final Uint8List? annotated = args?['annotated'] as Uint8List?;
+    final Map<String, dynamic>? detections =
+    (args?['detections'] as Map?)?.cast<String, dynamic>();
 
     return Scaffold(
       appBar: AppBar(title: const Text('Trang 3: Kết quả')),
       body: Padding(
-        padding: const EdgeInsets.all(24.0),
+        padding: const EdgeInsets.all(16.0),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (imagePath != null) ...[
-              Expanded(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(16),
-                  child: Image.file(
-                    File(imagePath),
-                    fit: BoxFit.contain,
-                  ),
-                ),
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: annotated != null
+                    ? Image.memory(annotated, fit: BoxFit.contain)
+                    : (rawPath != null
+                    ? Image.file(File(rawPath), fit: BoxFit.contain)
+                    : const Center(child: Text('Không có ảnh'))),
               ),
-              const SizedBox(height: 16),
-              const Text(
-                'Kết quả nhận diện (demo): Chưa xử lý mô hình.\nTại đây bạn tích hợp YOLO/TF Lite/ONNX...',
-                textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Detections: ${detections != null ? detections.toString() : "N/A"}',
               ),
-            ] else ...[
-              const Expanded(
-                child: Center(child: Text('Không có ảnh đầu vào.')),
-              )
-            ],
-            const SizedBox(height: 16),
+            ),
+            const SizedBox(height: 12),
             FilledButton.icon(
               icon: const Icon(Icons.home),
               label: const Text('Về trang đầu'),
