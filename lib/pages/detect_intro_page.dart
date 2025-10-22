@@ -20,7 +20,7 @@ class DetectIntroPage extends StatefulWidget {
 class _DetectIntroPageState extends State<DetectIntroPage> {
   final ImagePicker _picker = ImagePicker();
 
-  static const _rosUrl = 'ws://192.168.1.100:9090'; // ĐỔI IP ROS Ở ĐÂY
+  static const _rosUrl = 'ws://172.20.10.3:9090'; // ĐỔI IP ROS Ở ĐÂY
 
   late final RosbridgeClient _ros;
   String _status = 'Disconnected';
