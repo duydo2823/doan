@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'pages/detect_intro_page.dart';
 import 'pages/result_page.dart';
+import 'pages/history_page.dart'; // ✅ Thêm dòng này
 
 void main() {
   runApp(const MyApp());
@@ -23,6 +24,7 @@ class MyApp extends StatelessWidget {
         '/': (_) => const HomePage(),
         DetectIntroPage.routeName: (_) => const DetectIntroPage(),
         ResultPage.routeName: (_) => const ResultPage(),
+        '/history': (_) => const HistoryPage(), // ✅ Route cho trang lịch sử
       },
     );
   }
@@ -85,6 +87,8 @@ class HomePage extends StatelessWidget {
                       style: TextStyle(fontSize: 15, color: Colors.black87, height: 1.4),
                     ),
                     const SizedBox(height: 24),
+
+                    // 🔹 Nút Bắt đầu nhận diện
                     FilledButton.icon(
                       icon: const Icon(Icons.camera_alt),
                       label: const Text('Bắt đầu nhận diện'),
@@ -97,10 +101,14 @@ class HomePage extends StatelessWidget {
                           Navigator.pushNamed(context, DetectIntroPage.routeName),
                     ),
                     const SizedBox(height: 12),
+
+                    // 🔹 Nút Xem tất cả bệnh
                     OutlinedButton.icon(
                       icon: const Icon(Icons.list_alt_outlined),
                       label: const Text('Xem tất cả bệnh'),
-                      onPressed: () {}, // TODO: mở danh sách bệnh (sau này)
+                      onPressed: () {
+                        Navigator.pushNamed(context, '/history'); // ✅ mở trang lịch sử
+                      },
                       style: OutlinedButton.styleFrom(
                         minimumSize: const Size(double.infinity, 48),
                         foregroundColor: Colors.green.shade800,
