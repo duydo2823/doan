@@ -20,7 +20,8 @@ class DetectIntroPage extends StatefulWidget {
 class _DetectIntroPageState extends State<DetectIntroPage> {
   final ImagePicker _picker = ImagePicker();
 
-  static const _rosUrl = 'ws://172.20.10.3:9090'; // ĐỔI IP ROS Ở ĐÂY
+  // ⚠️ Đổi IP rosbridge theo máy ROS của bạn
+  static const _rosUrl = 'ws://172.20.10.3:9090';
 
   late final RosbridgeClient _ros;
   String _status = 'Disconnected';
@@ -92,7 +93,12 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   }
 
   Future<void> _captureAndSend() async {
-    if (!_ros.isConnected || !_lastPingOk) return;
+    if (!_ros.isConnected || !_lastPingOk) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Chưa kết nối ROS hoặc ROS không phản hồi.')),
+      );
+      return;
+    }
     try {
       final x = await _picker.pickImage(source: ImageSource.camera);
       if (x == null) return;
@@ -121,7 +127,6 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
         foregroundColor: Colors.white,
         title: const Text('Phát hiện bệnh lá cà phê'),
         actions: [
-          // Đèn trạng thái
           Padding(
             padding: const EdgeInsets.only(right: 12),
             child: Row(
@@ -155,7 +160,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
               Text(_status, style: const TextStyle(color: Colors.black87)),
               const SizedBox(height: 8),
 
-              // Hàng nút: Kết nối / Ngắt / Kiểm tra kết nối
+              // ---- Kết nối / ngắt / kiểm tra ----
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
@@ -180,7 +185,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
               const SizedBox(height: 12),
 
-              // Nút chụp & gửi (chỉ bật khi ping OK)
+              // ---- Chụp & gửi lên ROS ----
               ElevatedButton.icon(
                 icon: const Icon(Icons.camera_alt),
                 label: const Text('Chụp & gửi lên ROS'),
@@ -195,7 +200,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
               const SizedBox(height: 12),
 
-              // Hiển thị ảnh annotate nếu có, nếu chưa thì ảnh gốc, nếu chưa chụp thì placeholder
+              // ---- Hiển thị ảnh (annotated > gốc > placeholder) ----
               Expanded(
                 child: Builder(
                   builder: (_) {
@@ -210,30 +215,36 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                         child: Image.file(File(_captured!.path), fit: BoxFit.contain),
                       );
                     }
-                    return const Center(child: Text('Chưa có ảnh • Kết nối rồi bấm “Chụp & gửi lên ROS”'));
+                    return const Center(
+                      child: Text('Chưa có ảnh • Kết nối ROS và bấm “Chụp & gửi lên ROS”'),
+                    );
                   },
                 ),
               ),
 
               const SizedBox(height: 8),
 
-              // Sang trang kết quả
+              // ---- Nút Xem kết quả ----
               FilledButton.icon(
                 icon: const Icon(Icons.visibility),
                 label: const Text('Xem kết quả'),
-                onPressed: (_captured != null)
-                    ? () {
+                onPressed: () {
+                  if (_captured == null && _annotatedBytes == null) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Chưa có dữ liệu để hiển thị')),
+                    );
+                    return;
+                  }
                   Navigator.pushNamed(
                     context,
                     ResultPage.routeName,
                     arguments: {
-                      'rawPath': _captured!.path,
+                      'rawPath': _captured?.path,
                       'annotated': _annotatedBytes,
                       'detections': _detections,
                     },
                   );
-                }
-                    : null,
+                },
               ),
             ],
           ),
