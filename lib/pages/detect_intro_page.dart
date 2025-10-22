@@ -1,13 +1,20 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
-
 import '../services/rosbridge_client.dart';
 import 'result_page.dart';
+
+// 🌿 Map tên bệnh tiếng Việt
+const Map<String, String> kDiseaseVI = {
+  'Cercospora': 'Đốm mắt cua (Cercospora)',
+  'Miner': 'Sâu đục lá (Leaf miner)',
+  'Phoma': 'Thán thư (Phoma)',
+  'Rust': 'Rỉ sắt lá (Rust)',
+  'Healthy': 'Lá khoẻ mạnh',
+};
 
 class DetectIntroPage extends StatefulWidget {
   static const routeName = '/detect-intro';
@@ -27,7 +34,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   String _status = 'Disconnected';
   bool _lastPingOk = false;
   int? _lastRttMs;
-  Timer? _hb; // heartbeat timer
+  Timer? _hb;
 
   XFile? _captured;
   Uint8List? _annotatedBytes;
@@ -51,7 +58,6 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     super.dispose();
   }
 
-  // ---------- ROS connection ----------
   void _startHeartbeat() {
     _hb?.cancel();
     _hb = Timer.periodic(const Duration(seconds: 5), (_) => _doPing(silent: true));
@@ -93,7 +99,6 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     }
   }
 
-  // ---------- Capture & send ----------
   Future<void> _captureAndSend() async {
     if (!_ros.isConnected || !_lastPingOk) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -107,11 +112,9 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       setState(() {
         _captured = x;
         _annotatedBytes = null;
-        _detections = null;
       });
       final bytes = await File(x.path).readAsBytes();
       _ros.publishJpeg(bytes);
-      setState(() => _status = 'Ảnh đã gửi lên ROS...');
     } on PlatformException catch (e) {
       final denied = e.code.contains('denied');
       setState(() => _status = denied ? 'Permission denied: camera' : 'Camera error: ${e.code}');
@@ -164,7 +167,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
               Text(_status, style: const TextStyle(color: Colors.black87)),
               const SizedBox(height: 8),
 
-              // ---- Nút Kết nối / Ngắt / Ping ----
+              // ---- Kết nối / Ngắt / Kiểm tra ----
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
@@ -189,7 +192,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
               const SizedBox(height: 12),
 
-              // ---- Nút chụp & gửi ----
+              // ---- Chụp & gửi lên ROS ----
               ElevatedButton.icon(
                 icon: const Icon(Icons.camera_alt),
                 label: const Text('Chụp & gửi lên ROS'),
@@ -204,23 +207,55 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
               const SizedBox(height: 12),
 
-              // ---- Hiển thị ảnh (annotated hoặc gốc) ----
+              // ---- Ảnh hiển thị + Bbox overlay ----
               Expanded(
-                child: Builder(
-                  builder: (_) {
-                    if (_annotatedBytes != null) {
-                      return ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: Image.memory(_annotatedBytes!, fit: BoxFit.contain),
-                      );
-                    } else if (_captured != null) {
-                      return ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: Image.file(File(_captured!.path), fit: BoxFit.contain),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    if (_captured == null && _annotatedBytes == null) {
+                      return const Center(
+                        child: Text('Chưa có ảnh • Kết nối ROS và bấm “Chụp & gửi lên ROS”'),
                       );
                     }
-                    return const Center(
-                      child: Text('Chưa có ảnh • Kết nối ROS và bấm “Chụp & gửi lên ROS”'),
+
+                    final boxes = (_detections != null && _detections!['detections'] is List)
+                        ? List<Map<String, dynamic>>.from(_detections!['detections'])
+                        : const <Map<String, dynamic>>[];
+
+                    final imgW = (_detections?['image']?['width'] as num?)?.toDouble();
+                    final imgH = (_detections?['image']?['height'] as num?)?.toDouble();
+
+                    return ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          FittedBox(
+                            fit: BoxFit.contain,
+                            child: SizedBox(
+                              width: imgW ?? constraints.maxWidth,
+                              height: imgH ?? constraints.maxHeight,
+                              child: _annotatedBytes != null
+                                  ? Image.memory(_annotatedBytes!)
+                                  : Image.file(File(_captured!.path)),
+                            ),
+                          ),
+                          if (_annotatedBytes == null && imgW != null && imgH != null && boxes.isNotEmpty)
+                            CustomPaint(
+                              painter: _BoxesPainter(
+                                boxes: boxes,
+                                imageW: imgW,
+                                imageH: imgH,
+                                label: (m) {
+                                  final cls = (m['cls'] ?? '').toString();
+                                  final vi = kDiseaseVI[cls] ?? cls;
+                                  final score =
+                                  (m['score'] is num) ? (m['score'] as num).toDouble() : 0.0;
+                                  return '${vi.split('(').first.trim()} ${score.toStringAsFixed(2)}';
+                                },
+                              ),
+                            ),
+                        ],
+                      ),
                     );
                   },
                 ),
@@ -228,19 +263,54 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
               const SizedBox(height: 8),
 
-              // ---- Kết quả JSON ----
+              // ---- Kết quả phát hiện ----
               if (_detections != null) ...[
                 Container(
                   padding: const EdgeInsets.all(12),
-                  margin: const EdgeInsets.only(bottom: 8),
                   decoration: BoxDecoration(
                     color: Colors.white,
                     borderRadius: BorderRadius.circular(12),
-                    boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 6, offset: Offset(0, 2))],
+                    boxShadow: [
+                      BoxShadow(color: Colors.black12, blurRadius: 6, offset: Offset(0, 2)),
+                    ],
                   ),
-                  child: Text('Kết quả: $_detections', style: const TextStyle(fontSize: 14)),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Kết quả phát hiện:',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 6),
+                      ...List<Map<String, dynamic>>.from(_detections!['detections'] ?? []).map((m) {
+                        final cls = (m['cls'] ?? '').toString();
+                        final vi = kDiseaseVI[cls] ?? cls;
+                        final score =
+                        (m['score'] is num) ? (m['score'] as num).toDouble() : 0.0;
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.local_florist,
+                                  size: 18, color: Color(0xFF43A047)),
+                              const SizedBox(width: 8),
+                              Expanded(child: Text(vi)),
+                              Text('${score.toStringAsFixed(2)}'),
+                            ],
+                          ),
+                        );
+                      }),
+                      if (_detections?['latency_ms'] != null) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          '⏱ Xử lý: ${(_detections!['latency_ms'] as num).toStringAsFixed(2)} ms',
+                          style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
+                        ),
+                      ],
+                    ],
+                  ),
                 ),
               ],
+
+              const SizedBox(height: 8),
 
               // ---- Nút Xem kết quả ----
               FilledButton.icon(
@@ -270,4 +340,54 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       ),
     );
   }
+}
+
+// ---------------- Painter vẽ khung bbox ----------------
+class _BoxesPainter extends CustomPainter {
+  _BoxesPainter({
+    required this.boxes,
+    required this.imageW,
+    required this.imageH,
+    required this.label,
+  });
+
+  final List<Map<String, dynamic>> boxes;
+  final double imageW, imageH;
+  final String Function(Map<String, dynamic>) label;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..color = const Color(0xFF00BCD4);
+
+    final fill = Paint()
+      ..style = PaintingStyle.fill
+      ..color = const Color(0xAA00BCD4);
+
+    for (final m in boxes) {
+      final bb = (m['bbox'] as List?)?.map((e) => (e as num).toDouble()).toList();
+      if (bb == null || bb.length < 4) continue;
+      final rect = Rect.fromLTRB(bb[0], bb[1], bb[2], bb[3]);
+
+      canvas.drawRect(rect, stroke);
+
+      final textSpan = TextSpan(
+        text: label(m),
+        style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
+      );
+      final tp = TextPainter(text: textSpan, textDirection: TextDirection.ltr);
+      tp.layout();
+      final pad = 4.0;
+      final labelRect = Rect.fromLTWH(
+          rect.left, rect.top - (tp.height + pad * 2), tp.width + pad * 2, tp.height + pad * 2);
+      canvas.drawRect(labelRect, fill);
+      tp.paint(canvas, Offset(labelRect.left + pad, labelRect.top + pad));
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _BoxesPainter old) =>
+      old.boxes != boxes || old.imageW != imageW || old.imageH != imageH;
 }
