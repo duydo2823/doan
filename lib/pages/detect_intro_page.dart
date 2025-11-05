@@ -8,7 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
-// Video file → stream từng frame JPEG
+// Video file → stream từng frame JPEG (dùng cho video từ album)
 import 'package:video_player/video_player.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
 
@@ -53,11 +53,11 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   Timer? _hb;
 
   // Dữ liệu hiển thị
-  XFile? _captured;
-  Uint8List? _annotatedBytes;
-  Map<String, dynamic>? _detections;
+  XFile? _captured;                 // ảnh gốc vừa chụp/chọn
+  Uint8List? _annotatedBytes;       // ảnh annotated ROS trả về
+  Map<String, dynamic>? _detections; // JSON detections từ ROS
 
-  // Stream video từ file
+  // Stream video từ file (album)
   bool _isStreamingVideo = false;
 
   // WebRTC (real-time)
@@ -65,7 +65,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
   WebSocketChannel? _sig;
   bool _webrtcOn = false;
-  bool _autoStartWebRTC = true; // auto bật sau khi kết nối ROS
+  bool _autoStartWebRTC = true; // auto bật sau khi connect ROS
 
   // UI: chọn hiển thị annotate hay overlay bbox trên video
   bool _showAnnotatedReturn = false;
@@ -87,7 +87,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   }
 
   Future<void> _initRenderers() async {
-    await _localRenderer.initialize(); // quan trọng để tránh khung trắng
+    await _localRenderer.initialize(); // tránh khung trắng khi hiển thị RTCVideoView
   }
 
   @override
@@ -208,7 +208,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     }
   }
 
-  // ---------- Video file: stream từng frame ----------
+  // ---------- Video file: stream từng frame (album) ----------
   Future<void> _pickVideoAndStreamFrames() async {
     if (!_ros.isConnected || !_lastPingOk) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -234,7 +234,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
         _status = 'Đang gửi frame từ video...';
       });
 
-      const frameIntervalMs = 400; // ~2.5 FPS
+      const frameIntervalMs = 400; // ~2.5 FPS để tránh nghẽn
       const thumbQuality = 75;
       const maxH = 720;
 
@@ -289,7 +289,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
         'audio': false,
       });
 
-      // 2) gán preview TRƯỚC khi tạo offer
+      // 2) gán preview TRƯỚC khi tạo offer (đảm bảo thấy ngay)
       _localRenderer.srcObject = media;
       setState(() {}); // kích vẽ lại RTCVideoView
 
@@ -523,20 +523,17 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                             style: TextStyle(fontWeight: FontWeight.w700),
                           ),
                         ),
-                        Row(
-                          children: [
-                            const Text('Hiện ảnh annotate', style: TextStyle(fontSize: 12)),
-                            Switch(
-                              value: _showAnnotatedReturn,
-                              onChanged: (v) => setState(() => _showAnnotatedReturn = v),
-                            ),
-                            const SizedBox(width: 8),
-                            const Text('Bật', style: TextStyle(fontSize: 12)),
-                            Switch(
-                              value: _webrtcOn,
-                              onChanged: (v) => v ? _startWebRTC() : _stopWebRTC(),
-                            ),
-                          ],
+                        const SizedBox(width: 12),
+                        const Text('Hiện ảnh annotate', style: TextStyle(fontSize: 12)),
+                        Switch(
+                          value: _showAnnotatedReturn,
+                          onChanged: (v) => setState(() => _showAnnotatedReturn = v),
+                        ),
+                        const SizedBox(width: 12),
+                        const Text('Bật', style: TextStyle(fontSize: 12)),
+                        Switch(
+                          value: _webrtcOn,
+                          onChanged: (v) => v ? _startWebRTC() : _stopWebRTC(),
                         ),
                       ],
                     ),
@@ -550,7 +547,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                           children: [
                             Container(color: const Color(0xFFF3F5F7)),
 
-                            // 1) Nền là video WebRTC
+                            // 1) Nền là video WebRTC (mượt)
                             if (_webrtcOn)
                               RTCVideoView(
                                 _localRenderer,
@@ -582,6 +579,29 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                                         : 0.0;
                                     return '${vi.split('(').first.trim()} ${score.toStringAsFixed(2)}';
                                   },
+                                ),
+                              ),
+
+                            // 4) PIP: ảnh vừa chụp/ảnh đã chọn (nhìn ngay)
+                            if ((_captured != null || _annotatedBytes != null) && !_showAnnotatedReturn)
+                              Positioned(
+                                left: 8,
+                                bottom: 8,
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      border: Border.all(color: Colors.black26, width: 1),
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    width: 120,
+                                    height: 160,
+                                    child: _annotatedBytes != null
+                                        ? Image.memory(_annotatedBytes!, fit: BoxFit.cover)
+                                        : (_captured != null
+                                        ? Image.file(File(_captured!.path), fit: BoxFit.cover)
+                                        : const SizedBox()),
+                                  ),
                                 ),
                               ),
 
@@ -622,7 +642,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
               const SizedBox(height: 12),
 
-              // ---- Khu coi ảnh tĩnh (annotated/gốc) khi không dùng WebRTC ----
+              // ---- Khu ảnh tĩnh (annotated/gốc) khi không dùng WebRTC ----
               Expanded(
                 child: LayoutBuilder(
                   builder: (context, constraints) {
