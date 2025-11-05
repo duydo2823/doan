@@ -1,3 +1,4 @@
+// lib/pages/result_page.dart
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
@@ -5,7 +6,7 @@ import 'package:flutter/material.dart';
 import '../services/history_storage.dart';
 import 'history_page.dart';
 
-/// Map tên bệnh EN -> VI (hiển thị)
+/// Map tên bệnh EN -> VI (tiêu đề hiển thị)
 const Map<String, String> kDiseaseVI = {
   'Cercospora': 'Đốm mắt cua (Cercospora)',
   'Miner'     : 'Sâu đục lá (Leaf miner)',
@@ -14,38 +15,71 @@ const Map<String, String> kDiseaseVI = {
   'Healthy'   : 'Lá khoẻ mạnh',
 };
 
-/// Hướng dẫn xử lý/phòng ngừa (rút gọn, thực tế bạn có thể mở rộng thêm)
-const Map<String, Map<String, String>> kDiseaseGuide = {
+/// Hướng dẫn chi tiết (chia 2 nhóm: xử lý nhanh + phòng ngừa lâu dài)
+const Map<String, Map<String, List<String>>> kGuide = {
   'Cercospora': {
-    'vi' : 'Đốm mắt cua (Cercospora)',
-    'mo' : 'Vết đốm tròn nâu đậm viền đỏ, trung tâm xám nhạt; thường ở lá già.',
-    'tip': 'Tỉa thông thoáng; thu gom lá bệnh; phun đồng hoặc Mancozeb luân phiên; bón cân đối N-P-K + vi lượng.',
+    'quick': [
+      'Tỉa thông thoáng tán, thu gom lá bệnh đem tiêu huỷ.',
+      'Hạn chế tưới mưa nhân tạo vào chiều tối.',
+      'Phun luân phiên đồng/Mancozeb theo khuyến cáo.',
+    ],
+    'long': [
+      'Bón cân đối N-P-K + vi lượng; tránh thừa đạm.',
+      'Chọn giống/ dòng khoẻ, ít mẫn cảm nếu có.',
+    ],
   },
   'Miner': {
-    'vi' : 'Sâu đục lá (Leaf miner)',
-    'mo' : 'Đường ngoằn ngoèo nâu vàng trong phiến lá, lá thủng/khô mép.',
-    'tip': 'Ngắt lá nặng; đặt bẫy vàng; phun Abamectin/Spinosad lúc sâu non buổi chiều; bảo tồn thiên địch.',
+    'quick': [
+      'Ngắt lá bị nặng; đặt bẫy vàng dính.',
+      'Phun Abamectin/Spinosad lúc sâu non (chiều mát).',
+    ],
+    'long': [
+      'Bảo tồn thiên địch; hạn chế lạm dụng thuốc.',
+      'Quản lý ẩm độ tán hợp lý.',
+    ],
   },
   'Phoma': {
-    'vi' : 'Thán thư (Phoma)',
-    'mo' : 'Đốm nâu cháy, lan nhanh theo hình oval, rìa xám trắng.',
-    'tip': 'Cắt tỉa phần bệnh; vệ sinh vườn; phun Copper/Fosetyl-Al/Propineb xoay tua; tránh tưới ướt tán ban đêm.',
+    'quick': [
+      'Cắt bỏ phần lá/cành bệnh; vệ sinh vườn.',
+      'Phun Copper/Fosetyl-Al/Propineb theo nhãn, xoay tua hoạt chất.',
+    ],
+    'long': [
+      'Không tưới ướt tán ban đêm; giảm ẩm độ kéo dài.',
+      'Tăng cường dinh dưỡng cân đối để cây khoẻ.',
+    ],
   },
   'Rust': {
-    'vi' : 'Rỉ sắt lá (Rust)',
-    'mo' : 'Ổ phấn vàng cam mặt dưới lá; lá úa rụng sớm.',
-    'tip': 'Chọn giống kháng; cân đối dinh dưỡng; phun Triazole/Strobilurin khi chớm bệnh; tăng cường K, Mg.',
+    'quick': [
+      'Tỉa lá gốc, thu gom lá có ổ phấn cam; tiêu huỷ.',
+      'Giảm ẩm tán; tránh tưới phun mưa buổi chiều.',
+      'Phun Triazole (propiconazole/difenoconazole) hoặc Strobilurin (azoxystrobin) theo nhãn.',
+    ],
+    'long': [
+      'Chọn giống/ dòng chống chịu (nếu có).',
+      'Quản lý bóng râm hợp lý, mật độ vừa phải.',
+      'Lên lịch phun phòng trước đỉnh dịch (đầu mùa mưa), luân phiên cơ chế.',
+    ],
   },
   'Healthy': {
-    'vi' : 'Lá khoẻ mạnh',
-    'mo' : 'Không phát hiện bất thường đáng kể.',
-    'tip': 'Duy trì chăm sóc, tưới tiêu hợp lý, bón cân đối và theo dõi định kỳ.',
+    'quick': ['Không phát hiện bất thường đáng kể.'],
+    'long': [
+      'Duy trì tưới tiêu hợp lý, bón phân cân đối.',
+      'Theo dõi định kỳ để phát hiện sớm.',
+    ],
   },
 };
 
-class ResultPage extends StatelessWidget {
+class ResultPage extends StatefulWidget {
   static const routeName = '/result';
   const ResultPage({super.key});
+
+  @override
+  State<ResultPage> createState() => _ResultPageState();
+}
+
+class _ResultPageState extends State<ResultPage> {
+  // trạng thái mở/đóng từng panel
+  final Map<String, bool> _expanded = {};
 
   @override
   Widget build(BuildContext context) {
@@ -54,17 +88,15 @@ class ResultPage extends StatelessWidget {
     final Uint8List? annotated         = args['annotated'] as Uint8List?;
     final Map<String, dynamic>? detMap = args['detections'] as Map<String, dynamic>?;
 
-    // Tính thông tin tổng quát
     final latencyStr = (detMap?['latency_ms'] is num)
         ? (detMap!['latency_ms'] as num).toStringAsFixed(2)
         : '-';
 
-    // Gom detection theo bệnh, chỉ giữ score cao nhất
-    final Map<String, double> bestByClass = _bestScoreByClass(detMap);
-    // Lấy overall-best để lưu lịch sử
-    final (String, double)? overallBest = _pickBestOverall(bestByClass);
+    // gộp theo bệnh, lấy score cao nhất
+    final byClass = _bestScoreByClass(detMap);
+    final overall = _pickBestOverall(byClass);
 
-    // Thời gian hiện tại để lưu lịch sử
+    // thời gian hiển thị + lưu lịch sử
     final now = DateTime.now();
     final timeStr =
         '${_dd(now.day)}/${_dd(now.month)}/${now.year} '
@@ -72,9 +104,9 @@ class ResultPage extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
+        backgroundColor: const Color(0xFFE9F1E9),
+        foregroundColor: Colors.black87,
         title: const Text('Kết quả nhận diện'),
-        backgroundColor: const Color(0xFF43A047),
-        foregroundColor: Colors.white,
         actions: [
           IconButton(
             tooltip: 'Lịch sử',
@@ -87,40 +119,32 @@ class ResultPage extends StatelessWidget {
         ],
       ),
 
-      // Nút Lưu vào lịch sử
       floatingActionButton: FloatingActionButton.extended(
         icon: const Icon(Icons.save_alt),
         label: const Text('Lưu kết quả'),
         onPressed: () async {
           final record = <String, dynamic>{
-            // HistoryPage của bạn đang dùng các field này
-            'path'   : rawPath,                                         // thumbnail
-            'cls'    : overallBest != null
-                ? (kDiseaseVI[overallBest.$1] ?? overallBest.$1)
-                : '—',
-            'score'  : overallBest != null
-                ? overallBest.$2.toStringAsFixed(2)
-                : '0.00',
+            'path'   : rawPath,
+            'cls'    : overall != null ? (kDiseaseVI[overall.$1] ?? overall.$1) : '—',
+            'score'  : overall != null ? overall.$2.toStringAsFixed(2) : '0.00',
             'time'   : timeStr,
             'latency': latencyStr,
           };
           await DetectionHistoryStorage.addRecord(record);
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('✅ Đã lưu vào lịch sử')),
-            );
-          }
+          if (!mounted) return;
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('✅ Đã lưu vào lịch sử')));
         },
       ),
 
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // Ảnh hiển thị
+          // ảnh
           ClipRRect(
             borderRadius: BorderRadius.circular(16),
             child: AspectRatio(
-              aspectRatio: 3 / 4, // giữ ảnh cân đối trên mobile
+              aspectRatio: 3 / 4,
               child: Container(
                 color: const Color(0xFFF3F5F7),
                 child: annotated != null
@@ -133,74 +157,95 @@ class ResultPage extends StatelessWidget {
           ),
           const SizedBox(height: 12),
 
-          // Thông tin thời gian & latency
-          _infoTile(
-            icon: Icons.schedule,
-            title: 'Ngày giờ nhận diện',
-            value: timeStr,
-          ),
-          _infoTile(
-            icon: Icons.speed,
-            title: 'Thời gian xử lý',
-            value: '$latencyStr ms',
-          ),
+          _infoTile(Icons.schedule, 'Ngày giờ nhận diện', timeStr),
+          _infoTile(Icons.speed, 'Thời gian xử lý', '$latencyStr ms'),
           const SizedBox(height: 8),
 
-          // Kết quả theo bệnh (đã gộp)
-          const Text('Kết quả phát hiện:', style: TextStyle(
-              fontSize: 16, fontWeight: FontWeight.w700)),
-          const SizedBox(height: 6),
+          const Text('Bệnh phát hiện', style: TextStyle(
+              fontSize: 18, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 8),
 
-          if (bestByClass.isEmpty)
+          if (byClass.isEmpty)
             const Text('Không có phát hiện nào.'),
-          ...bestByClass.entries.map((e) {
-            final en = e.key;
-            final score = e.value;
-            final vi = kDiseaseVI[en] ?? en;
-            final g  = kDiseaseGuide[en];
-            return _diseaseCard(
-              title: '$vi',
-              conf : score,
-              desc : g?['mo'] ?? '',
-              tip  : g?['tip'] ?? '',
-            );
-          }).toList(),
-          const SizedBox(height: 80), // chừa khoảng cho FAB
+          if (byClass.isNotEmpty)
+            _buildExpansionList(byClass),
+          const SizedBox(height: 80),
         ],
       ),
     );
   }
 
-  // ---- Helpers --------------------------------------------------------------
+  // ---------- UI helpers ----------
+  Widget _buildExpansionList(Map<String, double> byClass) {
+    final items = byClass.entries
+        .toList()
+      ..sort((a, b) => b.value.compareTo(a.value)); // bệnh mạnh nhất lên đầu
 
-  static Map<String, double> _bestScoreByClass(Map<String, dynamic>? det) {
-    final list = (det?['detections'] as List?) ?? const [];
-    final Map<String, double> best = {};
-    for (final m in list) {
-      final cls = (m['cls'] ?? '').toString();
-      final sc  = (m['score'] is num) ? (m['score'] as num).toDouble() : 0.0;
-      if (!best.containsKey(cls) || sc > best[cls]!) {
-        best[cls] = sc;
-      }
-    }
-    return best;
+    return Theme(
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: ExpansionPanelList.radio(
+        elevation: 1,
+        expandedHeaderPadding: EdgeInsets.zero,
+        materialGapSize: 8,
+        animationDuration: const Duration(milliseconds: 250),
+        children: items.map((e) {
+          final en = e.key;
+          final vi = kDiseaseVI[en] ?? en;
+          final pct = (e.value * 100).clamp(0, 100).toStringAsFixed(2);
+          final guide = kGuide[en] ?? {'quick': <String>[], 'long': <String>[]};
+          final quick = guide['quick'] ?? const <String>[];
+          final long  = guide['long']  ?? const <String>[];
+
+          return ExpansionPanelRadio(
+            value: en,
+            headerBuilder: (_, isOpen) => ListTile(
+              leading: CircleAvatar(
+                backgroundColor: const Color(0xFFFCEBEA),
+                foregroundColor: const Color(0xFFD0544D),
+                child: Text(vi.characters.first.toUpperCase()),
+              ),
+              title: Text(vi, style: const TextStyle(fontWeight: FontWeight.w700)),
+              subtitle: Text('Độ tin cậy: $pct%'),
+            ),
+            body: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const _SectionTitle('Xử lý nhanh'),
+                  ...quick.map((t) => _bullet(t)).toList(),
+                  const SizedBox(height: 12),
+                  const _SectionTitle('Phòng ngừa lâu dài'),
+                  ...long.map((t) => _bullet(t)).toList(),
+                ],
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
   }
 
-  static (String, double)? _pickBestOverall(Map<String, double> bestByClass) {
-    String? k;
-    double  v = -1;
-    bestByClass.forEach((cls, sc) {
-      if (sc > v) { v = sc; k = cls; }
-    });
-    return k == null ? null : (k!, v);
+  Widget _bullet(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('•  '),
+          Expanded(child: Text(text)),
+        ],
+      ),
+    );
   }
 
-  static Widget _infoTile({required IconData icon, required String title, required String value}) {
+  Widget _infoTile(IconData icon, String title, String value) {
     return Container(
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white, borderRadius: BorderRadius.circular(12),
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
         boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 6)],
       ),
       child: Row(
@@ -214,44 +259,39 @@ class ResultPage extends StatelessWidget {
     );
   }
 
-  static Widget _diseaseCard({
-    required String title,
-    required double conf,
-    required String desc,
-    required String tip,
-  }) {
-    return Container(
-      margin: const EdgeInsets.only(top: 8),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white, borderRadius: BorderRadius.circular(12),
-        boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 6)],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-          const SizedBox(height: 4),
-          Text('Độ tin cậy: ${conf.toStringAsFixed(2)}'),
-          if (desc.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(desc),
-          ],
-          if (tip.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('💡 '),
-                Expanded(child: Text(tip)),
-              ],
-            ),
-          ],
-        ],
-      ),
-    );
+  // ---------- logic helpers ----------
+  Map<String, double> _bestScoreByClass(Map<String, dynamic>? det) {
+    final list = (det?['detections'] as List?) ?? const [];
+    final Map<String, double> best = {};
+    for (final m in list) {
+      final cls = (m['cls'] ?? '').toString();
+      final sc  = (m['score'] is num) ? (m['score'] as num).toDouble() : 0.0;
+      if (!best.containsKey(cls) || sc > best[cls]!) best[cls] = sc;
+    }
+    return best;
+  }
+
+  (String, double)? _pickBestOverall(Map<String, double> bestByClass) {
+    String? k; double v = -1;
+    bestByClass.forEach((cls, sc) { if (sc > v) { v = sc; k = cls; } });
+    return k == null ? null : (k!, v);
   }
 
   String _dd(int n) => n.toString().padLeft(2, '0');
+}
+
+class _SectionTitle extends StatelessWidget {
+  final String text;
+  const _SectionTitle(this.text, {super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8, bottom: 6),
+      child: Text(
+        text,
+        style: const TextStyle(fontWeight: FontWeight.w800),
+      ),
+    );
+  }
 }
