@@ -19,7 +19,7 @@ import '../services/rosbridge_client.dart';
 import 'result_page.dart';
 
 // ====== Cấu hình mạng ======
-const String ROS_IP = '172.20.10.3'; // ⚠️ đổi IP máy ROS
+const String ROS_IP = '192.168.1.251'; // ⚠️ đổi IP máy ROS
 const int ROSBRIDGE_PORT = 9090;
 const int SIGNALING_PORT = 8765;
 
