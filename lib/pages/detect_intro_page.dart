@@ -4,6 +4,8 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:video_player/video_player.dart';
+import 'package:video_thumbnail/video_thumbnail.dart';
 import '../services/rosbridge_client.dart';
 import 'result_page.dart';
 
@@ -28,7 +30,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   final ImagePicker _picker = ImagePicker();
 
   // ⚠️ Đổi IP rosbridge theo máy ROS của bạn
-  static const _rosUrl = 'ws://172.20.10.3:9090';
+  static const _rosUrl = 'ws://192.168.1.251:9090';
 
   late final RosbridgeClient _ros;
   String _status = 'Disconnected';
@@ -39,6 +41,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   XFile? _captured;
   Uint8List? _annotatedBytes;
   Map<String, dynamic>? _detections;
+  bool _isStreamingVideo = false;
 
   @override
   void initState() {
@@ -107,7 +110,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       return;
     }
     try {
-      final x = await _picker.pickImage(source: ImageSource.camera);
+      final x = await _picker.pickImage(source: ImageSource.camera, imageQuality: 80, maxWidth: 1280);
       if (x == null) return;
       setState(() {
         _captured = x;
@@ -124,7 +127,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     }
   }
 
-  // 🆕 Chọn ảnh từ thư viện và gửi lên ROS
+  // 🖼️ Chọn ảnh từ thư viện
   Future<void> _pickFromGalleryAndSend() async {
     if (!_ros.isConnected || !_lastPingOk) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -133,7 +136,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       return;
     }
     try {
-      final x = await _picker.pickImage(source: ImageSource.gallery);
+      final x = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 80, maxWidth: 1280);
       if (x == null) return;
       setState(() {
         _captured = x;
@@ -152,6 +155,73 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     } catch (e) {
       setState(() => _status = 'Lỗi mở thư viện: $e');
     }
+  }
+
+  // 🎥 Chọn video & stream các frame lên ROS
+  Future<void> _pickVideoAndStreamFrames() async {
+    if (!_ros.isConnected || !_lastPingOk) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Chưa kết nối ROS hoặc ROS không phản hồi.')),
+      );
+      return;
+    }
+    try {
+      final xv = await _picker.pickVideo(source: ImageSource.gallery);
+      if (xv == null) return;
+
+      final file = File(xv.path);
+      final controller = VideoPlayerController.file(file);
+      await controller.initialize();
+      final dur = controller.value.duration;
+      await controller.dispose();
+
+      setState(() {
+        _captured = null;
+        _annotatedBytes = null;
+        _detections = null;
+        _isStreamingVideo = true;
+        _status = 'Đang gửi frame từ video...';
+      });
+
+      const frameIntervalMs = 400; // ~2.5 FPS
+      const thumbQuality = 75;
+      const maxH = 720;
+
+      for (int t = 0; t <= dur.inMilliseconds; t += frameIntervalMs) {
+        if (!_isStreamingVideo) break;
+        final bytes = await VideoThumbnail.thumbnailData(
+          video: xv.path,
+          timeMs: t,
+          imageFormat: ImageFormat.JPEG,
+          quality: thumbQuality,
+          maxHeight: maxH,
+        );
+        if (bytes == null) continue;
+        _ros.publishJpeg(bytes);
+        await Future.delayed(const Duration(milliseconds: 20));
+      }
+
+      if (mounted) {
+        setState(() {
+          _isStreamingVideo = false;
+          _status = 'Đã gửi xong frame từ video';
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Đã gửi xong các frame từ video.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isStreamingVideo = false;
+          _status = 'Lỗi xử lý video: $e';
+        });
+      }
+    }
+  }
+
+  void _stopVideoStream() {
+    setState(() => _isStreamingVideo = false);
   }
 
   @override
@@ -198,7 +268,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
               Text(_status, style: const TextStyle(color: Colors.black87)),
               const SizedBox(height: 8),
 
-              // ---- Kết nối / Ngắt / Kiểm tra ----
+              // ---- Kết nối / ngắt / kiểm tra ----
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
@@ -223,13 +293,13 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
               const SizedBox(height: 12),
 
-              // ---- Hàng nút chụp & chọn ảnh ----
+              // ---- Các nút chụp / chọn ảnh / chọn video ----
               Row(
                 children: [
                   Expanded(
                     child: ElevatedButton.icon(
                       icon: const Icon(Icons.camera_alt),
-                      label: const Text('Chụp & gửi lên ROS'),
+                      label: const Text('Chụp ảnh'),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: canShoot ? const Color(0xFF43A047) : Colors.grey,
                         foregroundColor: Colors.white,
@@ -243,7 +313,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                   Expanded(
                     child: OutlinedButton.icon(
                       icon: const Icon(Icons.photo_library_outlined),
-                      label: const Text('Chọn ảnh từ thư viện'),
+                      label: const Text('Chọn ảnh'),
                       style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                         shape: const StadiumBorder(),
@@ -254,16 +324,47 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                   ),
                 ],
               ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.video_library_outlined),
+                      label: Text(_isStreamingVideo ? 'Đang gửi video...' : 'Chọn video'),
+                      onPressed: (!canShoot || _isStreamingVideo) ? null : _pickVideoAndStreamFrames,
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        shape: const StadiumBorder(),
+                        foregroundColor: const Color(0xFF2E7D32),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      icon: const Icon(Icons.stop_circle_outlined),
+                      label: const Text('Dừng gửi'),
+                      onPressed: _isStreamingVideo ? _stopVideoStream : null,
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        shape: const StadiumBorder(),
+                        foregroundColor: Colors.red.shade700,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
 
               const SizedBox(height: 12),
 
-              // ---- Ảnh hiển thị + Bbox overlay ----
+              // ---- Ảnh hiển thị ----
               Expanded(
                 child: LayoutBuilder(
                   builder: (context, constraints) {
                     if (_captured == null && _annotatedBytes == null) {
                       return const Center(
-                        child: Text('Chưa có ảnh • Kết nối ROS và bấm “Chụp & gửi lên ROS” hoặc “Chọn ảnh từ thư viện”'),
+                        child: Text(
+                            'Chưa có ảnh hoặc video • Hãy kết nối ROS và chọn phương thức nhận diện'),
                       );
                     }
 
@@ -286,7 +387,9 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                               height: imgH ?? constraints.maxHeight,
                               child: _annotatedBytes != null
                                   ? Image.memory(_annotatedBytes!)
-                                  : Image.file(File(_captured!.path)),
+                                  : (_captured != null
+                                  ? Image.file(File(_captured!.path))
+                                  : const SizedBox()),
                             ),
                           ),
                           if (_annotatedBytes == null && imgW != null && imgH != null && boxes.isNotEmpty)
@@ -313,56 +416,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
               const SizedBox(height: 8),
 
-              // ---- Kết quả phát hiện ----
-              if (_detections != null) ...[
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: [
-                      BoxShadow(color: Colors.black12, blurRadius: 6, offset: Offset(0, 2)),
-                    ],
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Kết quả phát hiện:',
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 6),
-                      ...List<Map<String, dynamic>>.from(_detections!['detections'] ?? []).map((m) {
-                        final cls = (m['cls'] ?? '').toString();
-                        final vi = kDiseaseVI[cls] ?? cls;
-                        final score =
-                        (m['score'] is num) ? (m['score'] as num).toDouble() : 0.0;
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.local_florist,
-                                  size: 18, color: Color(0xFF43A047)),
-                              const SizedBox(width: 8),
-                              Expanded(child: Text(vi)),
-                              Text('${score.toStringAsFixed(2)}'),
-                            ],
-                          ),
-                        );
-                      }),
-                      if (_detections?['latency_ms'] != null) ...[
-                        const SizedBox(height: 6),
-                        Text(
-                          '⏱ Xử lý: ${(_detections!['latency_ms'] as num).toStringAsFixed(2)} ms',
-                          style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              ],
-
-              const SizedBox(height: 8),
-
-              // ---- Nút Xem kết quả ----
+              // ---- Nút xem kết quả ----
               FilledButton.icon(
                 icon: const Icon(Icons.visibility),
                 label: const Text('Xem kết quả'),
@@ -392,7 +446,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   }
 }
 
-// ---------------- Painter vẽ khung bbox ----------------
+// ---------------- Painter vẽ bbox ----------------
 class _BoxesPainter extends CustomPainter {
   _BoxesPainter({
     required this.boxes,
@@ -420,7 +474,6 @@ class _BoxesPainter extends CustomPainter {
       final bb = (m['bbox'] as List?)?.map((e) => (e as num).toDouble()).toList();
       if (bb == null || bb.length < 4) continue;
       final rect = Rect.fromLTRB(bb[0], bb[1], bb[2], bb[3]);
-
       canvas.drawRect(rect, stroke);
 
       final textSpan = TextSpan(
