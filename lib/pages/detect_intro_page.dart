@@ -67,6 +67,9 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   bool _webrtcOn = false;
   bool _autoStartWebRTC = true; // auto bật sau khi kết nối ROS
 
+  // UI: chọn hiển thị annotate hay overlay bbox trên video
+  bool _showAnnotatedReturn = false;
+
   String get _rosUrl => 'ws://$ROS_IP:$ROSBRIDGE_PORT';
   String get _signalUrl => 'ws://$ROS_IP:$SIGNALING_PORT';
 
@@ -372,6 +375,35 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
         ],
       ),
       backgroundColor: const Color(0xFFF4F8F5),
+
+      // ---- Ghim nút "Xem kết quả" ở dưới ----
+      bottomNavigationBar: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+          child: FilledButton.icon(
+            icon: const Icon(Icons.visibility),
+            label: const Text('Xem kết quả'),
+            onPressed: () {
+              if (_captured == null && _annotatedBytes == null && _detections == null) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Chưa có dữ liệu để hiển thị')),
+                );
+                return;
+              }
+              Navigator.pushNamed(
+                context,
+                ResultPage.routeName,
+                arguments: {
+                  'rawPath': _captured?.path,
+                  'annotated': _annotatedBytes,
+                  'detections': _detections,
+                },
+              );
+            },
+          ),
+        ),
+      ),
+
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -493,6 +525,12 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                         ),
                         Row(
                           children: [
+                            const Text('Hiện ảnh annotate', style: TextStyle(fontSize: 12)),
+                            Switch(
+                              value: _showAnnotatedReturn,
+                              onChanged: (v) => setState(() => _showAnnotatedReturn = v),
+                            ),
+                            const SizedBox(width: 8),
                             const Text('Bật', style: TextStyle(fontSize: 12)),
                             Switch(
                               value: _webrtcOn,
@@ -511,6 +549,8 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                           fit: StackFit.expand,
                           children: [
                             Container(color: const Color(0xFFF3F5F7)),
+
+                            // 1) Nền là video WebRTC
                             if (_webrtcOn)
                               RTCVideoView(
                                 _localRenderer,
@@ -518,8 +558,33 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                                     .RTCVideoViewObjectFitContain,
                                 mirror: false,
                               ),
-                            if (_annotatedBytes != null)
+
+                            // 2) Nếu BẬT hiển thị ảnh annotate trả về, phủ ảnh đó (sẽ “đè” video)
+                            if (_showAnnotatedReturn && _annotatedBytes != null)
                               Image.memory(_annotatedBytes!, fit: BoxFit.contain),
+
+                            // 3) Nếu KHÔNG bật annotate, vẽ bbox trực tiếp từ JSON lên video
+                            if (!_showAnnotatedReturn &&
+                                _detections != null &&
+                                _detections!['detections'] is List &&
+                                _detections!['image']?['width'] != null &&
+                                _detections!['image']?['height'] != null)
+                              CustomPaint(
+                                painter: _BoxesPainter(
+                                  boxes: List<Map<String, dynamic>>.from(_detections!['detections']),
+                                  imageW: (_detections!['image']['width'] as num).toDouble(),
+                                  imageH: (_detections!['image']['height'] as num).toDouble(),
+                                  label: (m) {
+                                    final cls = (m['cls'] ?? '').toString();
+                                    final vi = kDiseaseVI[cls] ?? cls;
+                                    final score = (m['score'] is num)
+                                        ? (m['score'] as num).toDouble()
+                                        : 0.0;
+                                    return '${vi.split('(').first.trim()} ${score.toStringAsFixed(2)}';
+                                  },
+                                ),
+                              ),
+
                             if (!_webrtcOn && _annotatedBytes == null)
                               const Center(
                                 child: Text(
@@ -557,7 +622,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
               const SizedBox(height: 12),
 
-              // ---- Hiển thị ảnh + bbox/annotated ----
+              // ---- Khu coi ảnh tĩnh (annotated/gốc) khi không dùng WebRTC ----
               Expanded(
                 child: LayoutBuilder(
                   builder: (context, constraints) {
@@ -568,11 +633,10 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                     final imgW = (_detections?['image']?['width'] as num?)?.toDouble();
                     final imgH = (_detections?['image']?['height'] as num?)?.toDouble();
 
-                    // Nếu chưa có gì cả
                     if (_captured == null && _annotatedBytes == null && !_webrtcOn) {
                       return const Center(
                         child: Text(
-                            'Chưa có ảnh hoặc video • Kết nối ROS rồi chụp/chọn ảnh, chọn video,\nhoặc bật WebRTC để stream real-time'),
+                            'Chưa có dữ liệu • Chụp/chọn ảnh, chọn video,\nhoặc bật WebRTC để stream real-time'),
                       );
                     }
 
@@ -616,31 +680,6 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                     );
                   },
                 ),
-              ),
-
-              const SizedBox(height: 8),
-
-              // ---- Xem kết quả ----
-              FilledButton.icon(
-                icon: const Icon(Icons.visibility),
-                label: const Text('Xem kết quả'),
-                onPressed: () {
-                  if (_captured == null && _annotatedBytes == null) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Chưa có dữ liệu để hiển thị')),
-                    );
-                    return;
-                  }
-                  Navigator.pushNamed(
-                    context,
-                    ResultPage.routeName,
-                    arguments: {
-                      'rawPath': _captured?.path,
-                      'annotated': _annotatedBytes,
-                      'detections': _detections,
-                    },
-                  );
-                },
               ),
             ],
           ),
