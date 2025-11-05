@@ -65,10 +65,12 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
   WebSocketChannel? _sig;
   bool _webrtcOn = false;
-  bool _autoStartWebRTC = true; // auto bật sau khi connect ROS
 
-  // UI: chọn hiển thị annotate hay overlay bbox trên video
-  bool _showAnnotatedReturn = false; // mặc định OFF theo yêu cầu
+  // ✅ Luôn bật WebRTC tự động sau khi kết nối ROS
+  final bool _autoStartWebRTC = true;
+
+  // ✅ Luôn bật hiển thị ảnh annotate (không cho tắt trên UI)
+  final bool _showAnnotatedReturn = true;
 
   String get _rosUrl => 'ws://$ROS_IP:$ROSBRIDGE_PORT';
   String get _signalUrl => 'ws://$ROS_IP:$SIGNALING_PORT';
@@ -115,13 +117,18 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       await _ros.connect();
       _startHeartbeat();
       await _doPing();
-      if (_autoStartWebRTC && !_webrtcOn) _startWebRTC();
+
+      // ✅ Tự động bật WebRTC (không có công tắc trên UI)
+      if (_autoStartWebRTC && !_webrtcOn) {
+        _startWebRTC();
+      }
     } catch (_) {}
   }
 
   void _disconnect() {
     _stopHeartbeat();
     _ros.disconnect();
+    _stopWebRTC();
     setState(() {
       _lastPingOk = false;
       _lastRttMs = null;
@@ -485,7 +492,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
               const SizedBox(height: 8),
 
-              // ---- WebRTC real-time stream (HEADER + 2 SWITCH CÙNG 1 HÀNG) ----
+              // ---- WebRTC real-time stream (KHÔNG HIỆN CÔNG TẮC) ----
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
@@ -496,40 +503,11 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Row(
-                      children: [
-                        const Expanded(
-                          child: Text(
-                            'WebRTC (real-time camera → ROS)',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(fontWeight: FontWeight.w700),
-                          ),
-                        ),
-                        // Gói 2 công tắc vào chung 1 hàng bên phải
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Text('Hiện annotate', style: TextStyle(fontSize: 12)),
-                            const SizedBox(width: 6),
-                            Switch(
-                              value: _showAnnotatedReturn,
-                              onChanged: (v) => setState(() => _showAnnotatedReturn = v),
-                            ),
-                            const SizedBox(width: 8),
-                            const Text('Bật', style: TextStyle(fontSize: 12)),
-                            const SizedBox(width: 6),
-                            Switch(
-                              value: _webrtcOn,
-                              onChanged: (v) => v ? _startWebRTC() : _stopWebRTC(),
-                            ),
-                          ],
-                        ),
-                      ],
+                    const Text(
+                      'WebRTC (real-time camera → ROS)',
+                      style: TextStyle(fontWeight: FontWeight.w700),
                     ),
-
                     const SizedBox(height: 8),
-
                     AspectRatio(
                       aspectRatio: 3 / 4,
                       child: ClipRRect(
@@ -538,6 +516,8 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                           fit: StackFit.expand,
                           children: [
                             Container(color: const Color(0xFFF3F5F7)),
+
+                            // Nền là video WebRTC
                             if (_webrtcOn)
                               RTCVideoView(
                                 _localRenderer,
@@ -545,84 +525,22 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                                 RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
                                 mirror: false,
                               ),
+
+                            // ✅ Luôn phủ ảnh annotated khi có (đè lên video)
                             if (_showAnnotatedReturn && _annotatedBytes != null)
                               Image.memory(_annotatedBytes!, fit: BoxFit.contain),
-                            if (!_showAnnotatedReturn &&
-                                _detections != null &&
-                                _detections!['detections'] is List &&
-                                _detections!['image']?['width'] != null &&
-                                _detections!['image']?['height'] != null)
-                              CustomPaint(
-                                painter: _BoxesPainter(
-                                  boxes: List<Map<String, dynamic>>.from(
-                                      _detections!['detections']),
-                                  imageW: (_detections!['image']['width'] as num).toDouble(),
-                                  imageH: (_detections!['image']['height'] as num).toDouble(),
-                                  label: (m) {
-                                    final cls = (m['cls'] ?? '').toString();
-                                    final vi = kDiseaseVI[cls] ?? cls;
-                                    final score = (m['score'] is num)
-                                        ? (m['score'] as num).toDouble()
-                                        : 0.0;
-                                    return '${vi.split('(').first.trim()} ${score.toStringAsFixed(2)}';
-                                  },
-                                ),
-                              ),
-                            if ((_captured != null || _annotatedBytes != null) &&
-                                !_showAnnotatedReturn)
-                              Positioned(
-                                left: 8,
-                                bottom: 8,
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(8),
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      border: Border.all(color: Colors.black26, width: 1),
-                                      borderRadius: BorderRadius.circular(8),
-                                    ),
-                                    width: 120,
-                                    height: 160,
-                                    child: _annotatedBytes != null
-                                        ? Image.memory(_annotatedBytes!, fit: BoxFit.cover)
-                                        : (_captured != null
-                                        ? Image.file(File(_captured!.path),
-                                        fit: BoxFit.cover)
-                                        : const SizedBox()),
-                                  ),
-                                ),
-                              ),
+
+                            // (Không hiển thị overlay bbox JSON nữa vì ta đã bật annotate)
                             if (!_webrtcOn && _annotatedBytes == null)
                               const Center(
                                 child: Text(
-                                  'Chưa bật WebRTC • Gạt công tắc “Bật” ở góc phải',
+                                  'Đang chờ WebRTC…',
                                   style: TextStyle(color: Colors.black54),
                                 ),
                               ),
                           ],
                         ),
                       ),
-                    ),
-
-                    const SizedBox(height: 8),
-
-                    Row(
-                      children: [
-                        Expanded(
-                          child: FilledButton.icon(
-                            icon: const Icon(Icons.play_circle_fill),
-                            label: const Text('Start WebRTC'),
-                            onPressed: _webrtcOn ? null : _startWebRTC,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            icon: const Icon(Icons.stop),
-                            label: const Text('Stop'),
-                            onPressed: _webrtcOn ? _stopWebRTC : null,
-                          ),
-                        ),
-                      ],
                     ),
                   ],
                 ),
@@ -634,19 +552,12 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
               Expanded(
                 child: LayoutBuilder(
                   builder: (context, constraints) {
-                    final boxes = (_detections != null &&
-                        _detections!['detections'] is List)
-                        ? List<Map<String, dynamic>>.from(_detections!['detections'])
-                        : const <Map<String, dynamic>>[];
-
                     final imgW =
                     (_detections?['image']?['width'] as num?)?.toDouble();
                     final imgH =
                     (_detections?['image']?['height'] as num?)?.toDouble();
 
-                    if (_captured == null &&
-                        _annotatedBytes == null &&
-                        !_webrtcOn) {
+                    if (_captured == null && _annotatedBytes == null && !_webrtcOn) {
                       return const Center(
                         child: Text(
                             'Chưa có dữ liệu • Chụp/chọn ảnh, chọn video,\nhoặc bật WebRTC để stream real-time'),
@@ -655,41 +566,17 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
                     return ClipRRect(
                       borderRadius: BorderRadius.circular(12),
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          FittedBox(
-                            fit: BoxFit.contain,
-                            child: SizedBox(
-                              width: imgW ?? constraints.maxWidth,
-                              height: imgH ?? constraints.maxHeight,
-                              child: _annotatedBytes != null
-                                  ? Image.memory(_annotatedBytes!)
-                                  : (_captured != null
-                                  ? Image.file(File(_captured!.path))
-                                  : const SizedBox()),
-                            ),
-                          ),
-                          if (_annotatedBytes == null &&
-                              imgW != null &&
-                              imgH != null &&
-                              boxes.isNotEmpty)
-                            CustomPaint(
-                              painter: _BoxesPainter(
-                                boxes: boxes,
-                                imageW: imgW,
-                                imageH: imgH,
-                                label: (m) {
-                                  final cls = (m['cls'] ?? '').toString();
-                                  final vi = kDiseaseVI[cls] ?? cls;
-                                  final score = (m['score'] is num)
-                                      ? (m['score'] as num).toDouble()
-                                      : 0.0;
-                                  return '${vi.split('(').first.trim()} ${score.toStringAsFixed(2)}';
-                                },
-                              ),
-                            ),
-                        ],
+                      child: FittedBox(
+                        fit: BoxFit.contain,
+                        child: SizedBox(
+                          width: imgW ?? constraints.maxWidth,
+                          height: imgH ?? constraints.maxHeight,
+                          child: _annotatedBytes != null
+                              ? Image.memory(_annotatedBytes!)
+                              : (_captured != null
+                              ? Image.file(File(_captured!.path))
+                              : const SizedBox()),
+                        ),
                       ),
                     );
                   },
@@ -701,59 +588,4 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       ),
     );
   }
-}
-
-// ---------------- Painter vẽ bbox ----------------
-class _BoxesPainter extends CustomPainter {
-  _BoxesPainter({
-    required this.boxes,
-    required this.imageW,
-    required this.imageH,
-    required this.label,
-  });
-
-  final List<Map<String, dynamic>> boxes;
-  final double imageW, imageH;
-  final String Function(Map<String, dynamic>) label;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final stroke = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3
-      ..color = const Color(0xFF00BCD4);
-
-    final fill = Paint()
-      ..style = PaintingStyle.fill
-      ..color = const Color(0xAA00BCD4);
-
-    for (final m in boxes) {
-      final bb =
-      (m['bbox'] as List?)?.map((e) => (e as num).toDouble()).toList();
-      if (bb == null || bb.length < 4) continue;
-      final rect = Rect.fromLTRB(bb[0], bb[1], bb[2], bb[3]);
-      canvas.drawRect(rect, stroke);
-
-      final textSpan = TextSpan(
-        text: label(m),
-        style: const TextStyle(
-            color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
-      );
-      final tp = TextPainter(text: textSpan, textDirection: TextDirection.ltr);
-      tp.layout();
-      const pad = 4.0;
-      final labelRect = Rect.fromLTWH(
-        rect.left,
-        rect.top - (tp.height + pad * 2),
-        tp.width + pad * 2,
-        tp.height + pad * 2,
-      );
-      canvas.drawRect(labelRect, fill);
-      tp.paint(canvas, Offset(labelRect.left + pad, labelRect.top + pad));
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _BoxesPainter old) =>
-      old.boxes != boxes || old.imageW != imageW || old.imageH != imageH;
 }
