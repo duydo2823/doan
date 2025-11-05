@@ -1,15 +1,29 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+
+// Video (stream từng frame từ file)
 import 'package:video_player/video_player.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
+
+// WebRTC real-time camera
+import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+
 import '../services/rosbridge_client.dart';
 import 'result_page.dart';
 
-// 🌿 Map tên bệnh tiếng Việt
+// ====== Cấu hình mạng ======
+const String ROS_IP = '172.20.10.3'; // ⚠️ đổi IP máy ROS
+const int ROSBRIDGE_PORT = 9090;
+const int SIGNALING_PORT = 8765;
+
+// ====== Map tên bệnh tiếng Việt ======
 const Map<String, String> kDiseaseVI = {
   'Cercospora': 'Đốm mắt cua (Cercospora)',
   'Miner': 'Sâu đục lá (Leaf miner)',
@@ -27,40 +41,57 @@ class DetectIntroPage extends StatefulWidget {
 }
 
 class _DetectIntroPageState extends State<DetectIntroPage> {
+  // Image picker
   final ImagePicker _picker = ImagePicker();
 
-  // ⚠️ Đổi IP rosbridge theo máy ROS của bạn
-  static const _rosUrl = 'ws://192.168.1.251:9090';
-
+  // ROS bridge
   late final RosbridgeClient _ros;
   String _status = 'Disconnected';
   bool _lastPingOk = false;
   int? _lastRttMs;
   Timer? _hb;
 
+  // Dữ liệu hiển thị
   XFile? _captured;
   Uint8List? _annotatedBytes;
   Map<String, dynamic>? _detections;
+
+  // Stream video từ file
   bool _isStreamingVideo = false;
+
+  // WebRTC (real-time)
+  RTCPeerConnection? _pc;
+  final _localRenderer = RTCVideoRenderer();
+  WebSocketChannel? _sig;
+  bool _webrtcOn = false;
+
+  String get _rosUrl => 'ws://$ROS_IP:$ROSBRIDGE_PORT';
+  String get _signalUrl => 'ws://$ROS_IP:$SIGNALING_PORT';
 
   @override
   void initState() {
     super.initState();
+    // Init ROS client
     _ros = RosbridgeClient(
       url: _rosUrl,
       onStatus: (s) => setState(() => _status = s),
       onAnnotatedImage: (jpeg) => setState(() => _annotatedBytes = jpeg),
       onDetections: (m) => setState(() => _detections = m),
     );
+    // Init WebRTC renderer
+    _localRenderer.initialize();
   }
 
   @override
   void dispose() {
     _stopHeartbeat();
     _ros.disconnect();
+    _stopWebRTC();
+    _localRenderer.dispose();
     super.dispose();
   }
 
+  // ---------- ROS heartbeat ----------
   void _startHeartbeat() {
     _hb?.cancel();
     _hb = Timer.periodic(const Duration(seconds: 5), (_) => _doPing(silent: true));
@@ -102,6 +133,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     }
   }
 
+  // ---------- Ảnh: chụp / chọn & gửi ----------
   Future<void> _captureAndSend() async {
     if (!_ros.isConnected || !_lastPingOk) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -110,7 +142,11 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       return;
     }
     try {
-      final x = await _picker.pickImage(source: ImageSource.camera, imageQuality: 80, maxWidth: 1280);
+      final x = await _picker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 80,
+        maxWidth: 1280,
+      );
       if (x == null) return;
       setState(() {
         _captured = x;
@@ -127,7 +163,6 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     }
   }
 
-  // 🖼️ Chọn ảnh từ thư viện
   Future<void> _pickFromGalleryAndSend() async {
     if (!_ros.isConnected || !_lastPingOk) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -136,7 +171,11 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       return;
     }
     try {
-      final x = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 80, maxWidth: 1280);
+      final x = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 80,
+        maxWidth: 1280,
+      );
       if (x == null) return;
       setState(() {
         _captured = x;
@@ -157,7 +196,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     }
   }
 
-  // 🎥 Chọn video & stream các frame lên ROS
+  // ---------- Video file: stream từng frame ----------
   Future<void> _pickVideoAndStreamFrames() async {
     if (!_ros.isConnected || !_lastPingOk) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -224,6 +263,67 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     setState(() => _isStreamingVideo = false);
   }
 
+  // ---------- WebRTC real-time ----------
+  Future<void> _startWebRTC() async {
+    try {
+      // 1) mở camera
+      final media = await navigator.mediaDevices.getUserMedia({
+        'video': {'facingMode': 'environment'} // dùng camera sau
+      });
+      _localRenderer.srcObject = media;
+
+      // 2) tạo peer
+      _pc = await createPeerConnection({
+        'sdpSemantics': 'unified-plan',
+      });
+
+      // 3) add track
+      for (var t in media.getTracks()) {
+        await _pc!.addTrack(t, media);
+      }
+
+      // 4) kết nối signaling
+      _sig = WebSocketChannel.connect(Uri.parse(_signalUrl));
+      _sig!.stream.listen((raw) async {
+        final data = jsonDecode(raw);
+        if (data['role'] == 'ros' && data['type'] == 'answer') {
+          final answer = RTCSessionDescription(data['sdp'], 'answer');
+          await _pc!.setRemoteDescription(answer);
+          if (mounted) setState(() => _webrtcOn = true);
+        }
+      });
+
+      // 5) tạo offer và gửi
+      final offer = await _pc!.createOffer({'offerToReceiveVideo': false});
+      await _pc!.setLocalDescription(offer);
+      _sig!.sink.add(jsonEncode({
+        'role': 'flutter',
+        'type': 'offer',
+        'sdp': offer.sdp,
+      }));
+
+      if (mounted) setState(() => _webrtcOn = true);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _status = 'WebRTC lỗi: $e');
+      }
+    }
+  }
+
+  Future<void> _stopWebRTC() async {
+    try {
+      await _pc?.close();
+    } catch (_) {}
+    try {
+      await _localRenderer.srcObject?.dispose();
+    } catch (_) {}
+    try {
+      _sig?.sink.close();
+    } catch (_) {}
+    setState(() => _webrtcOn = false);
+  }
+
+  // ---------- UI ----------
   @override
   Widget build(BuildContext context) {
     final connected = _ros.isConnected;
@@ -268,7 +368,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
               Text(_status, style: const TextStyle(color: Colors.black87)),
               const SizedBox(height: 8),
 
-              // ---- Kết nối / ngắt / kiểm tra ----
+              // ---- Kết nối / Ngắt / Ping ----
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
@@ -293,7 +393,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
               const SizedBox(height: 12),
 
-              // ---- Các nút chụp / chọn ảnh / chọn video ----
+              // ---- Điều khiển ảnh (chụp/chọn) ----
               Row(
                 children: [
                   Expanded(
@@ -325,6 +425,8 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                 ],
               ),
               const SizedBox(height: 8),
+
+              // ---- Điều khiển video file (stream frame) ----
               Row(
                 children: [
                   Expanded(
@@ -355,16 +457,63 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                 ],
               ),
 
+              const SizedBox(height: 8),
+
+              // ---- WebRTC real-time stream ----
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 6)],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Text('WebRTC (real-time camera → ROS)',
+                        style: TextStyle(fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 8),
+                    AspectRatio(
+                      aspectRatio: 3 / 4,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: RTCVideoView(_localRenderer, mirror: false),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton.icon(
+                            icon: const Icon(Icons.play_circle_fill),
+                            label: const Text('Start WebRTC stream'),
+                            onPressed: _webrtcOn ? null : _startWebRTC,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            icon: const Icon(Icons.stop),
+                            label: const Text('Stop'),
+                            onPressed: _webrtcOn ? _stopWebRTC : null,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+
               const SizedBox(height: 12),
 
-              // ---- Ảnh hiển thị ----
+              // ---- Hiển thị ảnh + bbox/annotated ----
               Expanded(
                 child: LayoutBuilder(
                   builder: (context, constraints) {
                     if (_captured == null && _annotatedBytes == null) {
                       return const Center(
                         child: Text(
-                            'Chưa có ảnh hoặc video • Hãy kết nối ROS và chọn phương thức nhận diện'),
+                            'Chưa có ảnh hoặc video • Kết nối ROS rồi chụp/chọn ảnh, chọn video,\nhoặc bật WebRTC để stream real-time'),
                       );
                     }
 
@@ -392,7 +541,10 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                                   : const SizedBox()),
                             ),
                           ),
-                          if (_annotatedBytes == null && imgW != null && imgH != null && boxes.isNotEmpty)
+                          if (_annotatedBytes == null &&
+                              imgW != null &&
+                              imgH != null &&
+                              boxes.isNotEmpty)
                             CustomPaint(
                               painter: _BoxesPainter(
                                 boxes: boxes,
@@ -416,7 +568,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
               const SizedBox(height: 8),
 
-              // ---- Nút xem kết quả ----
+              // ---- Xem kết quả ----
               FilledButton.icon(
                 icon: const Icon(Icons.visibility),
                 label: const Text('Xem kết quả'),

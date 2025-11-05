@@ -30,6 +30,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_webrtc: ^0.9.35
   video_player: ^2.9.2
   video_thumbnail: ^0.5.3
   permission_handler: ^11.4.0
