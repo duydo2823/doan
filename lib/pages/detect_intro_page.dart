@@ -53,8 +53,8 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   Timer? _hb;
 
   // Dữ liệu hiển thị
-  XFile? _captured; // ảnh gốc vừa chụp/chọn
-  Uint8List? _annotatedBytes; // ảnh annotated ROS trả về
+  XFile? _captured;                 // ảnh gốc vừa chụp/chọn
+  Uint8List? _annotatedBytes;       // ảnh annotated ROS trả về
   Map<String, dynamic>? _detections; // JSON detections từ ROS
 
   // Stream video từ file (album)
@@ -66,8 +66,11 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   WebSocketChannel? _sig;
   bool _webrtcOn = false;
 
-  // ✅ Tự động bật WebRTC sau khi kết nối ROS
+  // ✅ Luôn bật WebRTC tự động sau khi kết nối ROS
   final bool _autoStartWebRTC = true;
+
+  // ✅ Luôn bật hiển thị ảnh annotate (không cho tắt trên UI)
+  final bool _showAnnotatedReturn = true;
 
   String get _rosUrl => 'ws://$ROS_IP:$ROSBRIDGE_PORT';
   String get _signalUrl => 'ws://$ROS_IP:$SIGNALING_PORT';
@@ -282,9 +285,9 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       final media = await navigator.mediaDevices.getUserMedia({
         'video': {
           'facingMode': 'environment',
-          'width': {'ideal': 640},
-          'height': {'ideal': 480},
-          'frameRate': {'ideal': 20},
+          'width': {'ideal': 1280},
+          'height': {'ideal': 720},
+          'frameRate': {'ideal': 24},
         },
         'audio': false,
       });
@@ -309,11 +312,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
       final offer = await _pc!.createOffer({'offerToReceiveVideo': false});
       await _pc!.setLocalDescription(offer);
-      _sig!.sink.add(jsonEncode({
-        'role': 'flutter',
-        'type': 'offer',
-        'sdp': offer.sdp,
-      }));
+      _sig!.sink.add(jsonEncode({'role': 'flutter', 'type': 'offer', 'sdp': offer.sdp}));
 
       if (mounted) setState(() => _webrtcOn = true);
     } catch (e) {
@@ -322,16 +321,9 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   }
 
   Future<void> _stopWebRTC() async {
-    try {
-      await _pc?.close();
-    } catch (_) {}
-    try {
-      await _localRenderer.srcObject?.dispose();
-      _localRenderer.srcObject = null;
-    } catch (_) {}
-    try {
-      _sig?.sink.close();
-    } catch (_) {}
+    try { await _pc?.close(); } catch (_) {}
+    try { await _localRenderer.srcObject?.dispose(); _localRenderer.srcObject = null; } catch (_) {}
+    try { _sig?.sink.close(); } catch (_) {}
     setState(() => _webrtcOn = false);
   }
 
@@ -351,16 +343,11 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
             padding: const EdgeInsets.only(right: 12),
             child: Row(
               children: [
-                Icon(
-                  Icons.circle,
-                  size: 12,
-                  color: connected && _lastPingOk ? Colors.lightGreenAccent : Colors.redAccent,
-                ),
+                Icon(Icons.circle, size: 12,
+                    color: connected && _lastPingOk ? Colors.lightGreenAccent : Colors.redAccent),
                 const SizedBox(width: 6),
-                Text(
-                  connected ? (_lastPingOk ? 'Online' : 'No ping') : 'Offline',
-                  style: const TextStyle(fontSize: 12),
-                ),
+                Text(connected ? (_lastPingOk ? 'Online' : 'No ping') : 'Offline',
+                    style: const TextStyle(fontSize: 12)),
                 if (_lastRttMs != null) ...[
                   const SizedBox(width: 6),
                   Text('${_lastRttMs}ms', style: const TextStyle(fontSize: 12)),
@@ -372,7 +359,6 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       ),
       backgroundColor: const Color(0xFFF4F8F5),
 
-      // ---- Ghim nút "Xem kết quả" ở dưới ----
       bottomNavigationBar: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
@@ -409,7 +395,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
               Text(_status, style: const TextStyle(color: Colors.black87)),
               const SizedBox(height: 8),
 
-              // ---- 3 nút: Kết nối – Ngắt – Kiểm tra ----
+              // ---- 3 nút: Kết nối – Ngắt – Kiểm tra (CHUNG 1 HÀNG) ----
               Row(
                 children: [
                   Expanded(
@@ -471,10 +457,9 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                   ),
                 ],
               ),
-
               const SizedBox(height: 8),
 
-              // ---- Điều khiển video file (stream frame) ----
+              // ---- Điều khiển video file (stream frame) – CHUNG 1 HÀNG ----
               Row(
                 children: [
                   Expanded(
@@ -497,8 +482,8 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                       onPressed: _isStreamingVideo ? _stopVideoStream : null,
                       style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                        foregroundColor: Colors.red.shade700,
                         shape: const StadiumBorder(),
+                        foregroundColor: Colors.red.shade700,
                       ),
                     ),
                   ),
@@ -507,7 +492,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
               const SizedBox(height: 8),
 
-              // ---- WebRTC real-time stream ----
+              // ---- WebRTC real-time stream (KHÔNG HIỆN CÔNG TẮC) ----
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
@@ -532,7 +517,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                           children: [
                             Container(color: const Color(0xFFF3F5F7)),
 
-                            // 1) Nền là video WebRTC (mượt)
+                            // Nền là video WebRTC
                             if (_webrtcOn)
                               RTCVideoView(
                                 _localRenderer,
@@ -541,30 +526,12 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                                 mirror: false,
                               ),
 
-                            // 2) Overlay bbox JSON (vẽ trực tiếp lên video)
-                            if (_detections != null &&
-                                _detections!['detections'] is List &&
-                                _detections!['image']?['width'] != null &&
-                                _detections!['image']?['height'] != null)
-                              CustomPaint(
-                                painter: _BoxesPainter(
-                                  boxes: List<Map<String, dynamic>>.from(
-                                      _detections!['detections']),
-                                  imageW: (_detections!['image']['width'] as num).toDouble(),
-                                  imageH:
-                                  (_detections!['image']['height'] as num).toDouble(),
-                                  label: (m) {
-                                    final cls = (m['cls'] ?? '').toString();
-                                    final vi = kDiseaseVI[cls] ?? cls;
-                                    final score = (m['score'] is num)
-                                        ? (m['score'] as num).toDouble()
-                                        : 0.0;
-                                    return '${vi.split('(').first.trim()} ${score.toStringAsFixed(2)}';
-                                  },
-                                ),
-                              ),
+                            // ✅ Luôn phủ ảnh annotated khi có (đè lên video)
+                            if (_showAnnotatedReturn && _annotatedBytes != null)
+                              Image.memory(_annotatedBytes!, fit: BoxFit.contain),
 
-                            if (!_webrtcOn)
+                            // (Không hiển thị overlay bbox JSON nữa vì ta đã bật annotate)
+                            if (!_webrtcOn && _annotatedBytes == null)
                               const Center(
                                 child: Text(
                                   'Đang chờ WebRTC…',
@@ -585,12 +552,6 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
               Expanded(
                 child: LayoutBuilder(
                   builder: (context, constraints) {
-                    final boxes =
-                    (_detections != null && _detections!['detections'] is List)
-                        ? List<Map<String, dynamic>>.from(
-                        _detections!['detections'])
-                        : const <Map<String, dynamic>>[];
-
                     final imgW =
                     (_detections?['image']?['width'] as num?)?.toDouble();
                     final imgH =
@@ -599,49 +560,23 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                     if (_captured == null && _annotatedBytes == null && !_webrtcOn) {
                       return const Center(
                         child: Text(
-                          'Chưa có dữ liệu • Chụp/chọn ảnh, chọn video,\nhoặc bật WebRTC để stream real-time',
-                          textAlign: TextAlign.center,
-                        ),
+                            'Chưa có dữ liệu • Chụp/chọn ảnh, chọn video,\nhoặc bật WebRTC để stream real-time'),
                       );
                     }
 
                     return ClipRRect(
                       borderRadius: BorderRadius.circular(12),
-                      child: Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          FittedBox(
-                            fit: BoxFit.contain,
-                            child: SizedBox(
-                              width: imgW ?? constraints.maxWidth,
-                              height: imgH ?? constraints.maxHeight,
-                              child: _annotatedBytes != null
-                                  ? Image.memory(_annotatedBytes!)
-                                  : (_captured != null
-                                  ? Image.file(File(_captured!.path))
-                                  : const SizedBox()),
-                            ),
-                          ),
-                          if (_annotatedBytes == null &&
-                              imgW != null &&
-                              imgH != null &&
-                              boxes.isNotEmpty)
-                            CustomPaint(
-                              painter: _BoxesPainter(
-                                boxes: boxes,
-                                imageW: imgW,
-                                imageH: imgH,
-                                label: (m) {
-                                  final cls = (m['cls'] ?? '').toString();
-                                  final vi = kDiseaseVI[cls] ?? cls;
-                                  final score = (m['score'] is num)
-                                      ? (m['score'] as num).toDouble()
-                                      : 0.0;
-                                  return '${vi.split('(').first.trim()} ${score.toStringAsFixed(2)}';
-                                },
-                              ),
-                            ),
-                        ],
+                      child: FittedBox(
+                        fit: BoxFit.contain,
+                        child: SizedBox(
+                          width: imgW ?? constraints.maxWidth,
+                          height: imgH ?? constraints.maxHeight,
+                          child: _annotatedBytes != null
+                              ? Image.memory(_annotatedBytes!)
+                              : (_captured != null
+                              ? Image.file(File(_captured!.path))
+                              : const SizedBox()),
+                        ),
                       ),
                     );
                   },
@@ -653,75 +588,4 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       ),
     );
   }
-}
-
-// ---------------- Painter vẽ bbox ----------------
-class _BoxesPainter extends CustomPainter {
-  _BoxesPainter({
-    required this.boxes,
-    required this.imageW,
-    required this.imageH,
-    required this.label,
-  });
-
-  final List<Map<String, dynamic>> boxes;
-  final double imageW, imageH;
-  final String Function(Map<String, dynamic>) label;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final stroke = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3
-      ..color = const Color(0xFF00BCD4);
-
-    final fill = Paint()
-      ..style = PaintingStyle.fill
-      ..color = const Color(0xAA00BCD4);
-
-    for (final m in boxes) {
-      final bb = (m['bbox'] as List?)
-          ?.map((e) => (e as num).toDouble())
-          .toList();
-      if (bb == null || bb.length < 4) continue;
-
-      // scale theo kích thước canvas
-      final sx = size.width / imageW;
-      final sy = size.height / imageH;
-
-      final rect = Rect.fromLTRB(
-        bb[0] * sx,
-        bb[1] * sy,
-        bb[2] * sx,
-        bb[3] * sy,
-      );
-      canvas.drawRect(rect, stroke);
-
-      final textSpan = TextSpan(
-        text: label(m),
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 14,
-          fontWeight: FontWeight.w600,
-        ),
-      );
-      final tp = TextPainter(
-        text: textSpan,
-        textDirection: TextDirection.ltr,
-      )..layout();
-      const pad = 4.0;
-      final labelRect = Rect.fromLTWH(
-        rect.left,
-        rect.top - (tp.height + pad * 2),
-        tp.width + pad * 2,
-        tp.height + pad * 2,
-      );
-      canvas.drawRect(labelRect, fill);
-      tp.paint(canvas, Offset(labelRect.left + pad, labelRect.top + pad));
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _BoxesPainter old) =>
-      old.boxes != boxes || old.imageW != imageW || old.imageH != imageH;
 }
