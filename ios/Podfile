@@ -37,7 +37,7 @@ post_install do |installer|
 
     # Ép target tối thiểu về 12.0 cho tất cả pods (tránh cảnh báo/chồng chéo)
     target.build_configurations.each do |config|
-      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '12.0'
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
       # Bitcode đã deprecated — Flutter đã tắt, nhưng giữ cho chắc:
       config.build_settings['ENABLE_BITCODE'] = 'NO'
     end
