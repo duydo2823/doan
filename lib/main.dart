@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'pages/detect_intro_page.dart';
 import 'pages/result_page.dart';
-import 'pages/history_page.dart'; // ✅ Thêm dòng này
+import 'pages/history_page.dart'; // ✅ Trang lịch sử
+import 'pages/video_stream_page.dart'; // ✅ TRANG STREAM MỚI
 
 void main() {
   runApp(const MyApp());
@@ -14,10 +15,12 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Giám sát bệnh cà phê',
+      title: 'Coffee Leaf Disease Detector',
       theme: ThemeData(
         useMaterial3: true,
-        colorSchemeSeed: Colors.green,
+        colorSchemeSeed: const Color(0xFF2E7D32),
+        scaffoldBackgroundColor: const Color(0xFFF4F8F5),
+        fontFamily: 'Roboto',
       ),
       initialRoute: '/',
       routes: {
@@ -25,6 +28,7 @@ class MyApp extends StatelessWidget {
         DetectIntroPage.routeName: (_) => const DetectIntroPage(),
         ResultPage.routeName: (_) => const ResultPage(),
         '/history': (_) => const HistoryPage(), // ✅ Route cho trang lịch sử
+        VideoStreamPage.routeName: (_) => const VideoStreamPage(), // ✅ Route trang stream
       },
     );
   }
@@ -39,9 +43,8 @@ class HomePage extends StatelessWidget {
       backgroundColor: const Color(0xFFF4F8F5),
       body: SafeArea(
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            // LOGO trên cùng (sửa đường dẫn assets theo dự án của bạn)
+            // Thanh logo
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
               child: Row(
@@ -59,32 +62,57 @@ class HomePage extends StatelessWidget {
                 padding: const EdgeInsets.all(24),
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
+                  borderRadius: BorderRadius.circular(24),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black12,
-                      blurRadius: 8,
-                      offset: const Offset(0, 3),
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 12,
+                      offset: const Offset(0, 6),
                     ),
                   ],
                 ),
                 child: Column(
-                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'HỆ THỐNG GIÁM SÁT BỆNH\nCÀ PHÊ ỨNG DỤNG THỊ GIÁC MÁY TÍNH VÀ IOT',
-                      textAlign: TextAlign.center,
+                    Text(
+                      'HỆ THỐNG NHẬN DIỆN BỆNH TRÊN LÁ CÀ PHÊ',
                       style: TextStyle(
                         fontSize: 18,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.green,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.green.shade800,
+                        letterSpacing: 1.2,
                       ),
                     ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 12),
                     const Text(
-                      'Ứng dụng Flutter kết hợp ROS2 và YOLOv8 để phát hiện bệnh trên lá cà phê theo thời gian thực.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 15, color: Colors.black87, height: 1.4),
+                      'Ứng dụng thị giác máy tính và IoT để hỗ trợ người nông dân phát hiện sớm các bệnh trên lá cà phê.',
+                      style: TextStyle(fontSize: 14, height: 1.4),
+                    ),
+                    const SizedBox(height: 20),
+                    Row(
+                      children: [
+                        Icon(Icons.sensors, color: Colors.green.shade700),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text(
+                            'Kết nối với cụm xử lý Jetson Nano / ROS2 để nhận diện thời gian thực.',
+                            style: TextStyle(fontSize: 13),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Icon(Icons.history_rounded, color: Colors.brown.shade400),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text(
+                            'Lưu lại lịch sử các lần nhận diện để theo dõi tình trạng vườn cây.',
+                            style: TextStyle(fontSize: 13),
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 24),
 
@@ -102,13 +130,11 @@ class HomePage extends StatelessWidget {
                     ),
                     const SizedBox(height: 12),
 
-                    // 🔹 Nút Xem tất cả bệnh
+                    // 🔹 Nút xem lịch sử
                     OutlinedButton.icon(
-                      icon: const Icon(Icons.list_alt_outlined),
-                      label: const Text('Xem tất cả bệnh'),
-                      onPressed: () {
-                        Navigator.pushNamed(context, '/history'); // ✅ mở trang lịch sử
-                      },
+                      icon: const Icon(Icons.history_rounded),
+                      label: const Text('Lịch sử nhận diện'),
+                      onPressed: () => Navigator.pushNamed(context, '/history'),
                       style: OutlinedButton.styleFrom(
                         minimumSize: const Size(double.infinity, 48),
                         foregroundColor: Colors.green.shade800,
@@ -118,7 +144,18 @@ class HomePage extends StatelessWidget {
                 ),
               ),
             ),
-            const SizedBox(height: 40),
+            const Spacer(),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 16),
+              child: Text(
+                'Khoa Công nghệ Điện tử – Trường ĐH Công nghiệp TP.HCM',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey.shade600,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ),
           ],
         ),
       ),

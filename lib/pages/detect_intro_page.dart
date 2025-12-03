@@ -18,9 +18,10 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../services/rosbridge_client.dart';
 import 'result_page.dart';
+import 'video_stream_page.dart';
 
 // ====== Cấu hình mạng ======
-const String ROS_IP = '172.20.10.3'; // ⚠️ ĐỔI IP MÁY ROS
+const String ROS_IP = '192.168.1.251'; // ⚠️ ĐỔI IP MÁY ROS
 const int ROSBRIDGE_PORT = 9090;
 const int SIGNALING_PORT = 8765;
 
@@ -53,8 +54,8 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   Timer? _hb;
 
   // Dữ liệu hiển thị
-  XFile? _captured;                 // ảnh gốc vừa chụp/chọn
-  Uint8List? _annotatedBytes;       // ảnh annotated ROS trả về
+  XFile? _captured; // ảnh gốc vừa chụp/chọn
+  Uint8List? _annotatedBytes; // ảnh annotated ROS trả về
   Map<String, dynamic>? _detections; // JSON detections từ ROS
 
   // Stream video từ file (album)
@@ -66,8 +67,8 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   WebSocketChannel? _sig;
   bool _webrtcOn = false;
 
-  // ✅ Luôn bật WebRTC tự động sau khi kết nối ROS
-  final bool _autoStartWebRTC = true;
+  // WebRTC real-time (không auto start trên trang này — stream chính nằm ở VideoStreamPage)
+  final bool _autoStartWebRTC = false;
 
   // ✅ Luôn bật hiển thị ảnh annotate (không cho tắt trên UI)
   final bool _showAnnotatedReturn = true;
@@ -118,7 +119,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       _startHeartbeat();
       await _doPing();
 
-      // ✅ Tự động bật WebRTC (không có công tắc trên UI)
+      // Trước đây auto start WebRTC ở đây, giờ tắt vì stream ở trang VideoStreamPage
       if (_autoStartWebRTC && !_webrtcOn) {
         _startWebRTC();
       }
@@ -164,18 +165,26 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
         maxWidth: 1280,
       );
       if (x == null) return;
+
       setState(() {
         _captured = x;
         _annotatedBytes = null;
         _detections = null;
+        _status = 'Đang gửi ảnh...';
       });
+
       final bytes = await File(x.path).readAsBytes();
       _ros.publishJpeg(bytes);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Đã gửi ảnh chụp lên ROS')),
+        );
+      }
     } on PlatformException catch (e) {
-      final denied = e.code.contains('denied');
-      setState(() => _status = denied ? 'Permission denied: camera' : 'Camera error: ${e.code}');
+      setState(() => _status = 'Không mở camera: ${e.code}');
     } catch (e) {
-      setState(() => _status = 'Không mở được camera: $e');
+      setState(() => _status = 'Lỗi chụp ảnh: $e');
     }
   }
 
@@ -193,11 +202,14 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
         maxWidth: 1280,
       );
       if (x == null) return;
+
       setState(() {
         _captured = x;
         _annotatedBytes = null;
         _detections = null;
+        _status = 'Đang gửi ảnh từ thư viện...';
       });
+
       final bytes = await File(x.path).readAsBytes();
       _ros.publishJpeg(bytes);
       if (mounted) {
@@ -213,6 +225,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   }
 
   // ---------- Video file: stream từng frame (album) ----------
+  // (Chức năng này hiện đã được thay bằng trang stream realtime, nhưng vẫn giữ code nếu sau này cần lại)
   Future<void> _pickVideoAndStreamFrames() async {
     if (!_ros.isConnected || !_lastPingOk) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -220,6 +233,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       );
       return;
     }
+
     try {
       final xv = await _picker.pickVideo(source: ImageSource.gallery);
       if (xv == null) return;
@@ -238,11 +252,12 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
         _status = 'Đang gửi frame từ video...';
       });
 
-      const frameIntervalMs = 400; // ~2.5 FPS để tránh nghẽn
-      const thumbQuality = 75;
+      final totalMs = dur.inMilliseconds;
+      const stepMs = 80; // ~12.5 fps
+      const thumbQuality = 70;
       const maxH = 720;
 
-      for (int t = 0; t <= dur.inMilliseconds; t += frameIntervalMs) {
+      for (int t = 0; t < totalMs; t += stepMs) {
         if (!_isStreamingVideo) break;
         final bytes = await VideoThumbnail.thumbnailData(
           video: xv.path,
@@ -276,7 +291,9 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   }
 
   void _stopVideoStream() {
-    setState(() => _isStreamingVideo = false);
+    setState(() {
+      _isStreamingVideo = false;
+    });
   }
 
   // ---------- WebRTC real-time ----------
@@ -293,41 +310,89 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       });
 
       _localRenderer.srcObject = media;
-      setState(() {});
 
       _pc = await createPeerConnection({'sdpSemantics': 'unified-plan'});
-      for (var t in media.getTracks()) {
+      for (final t in media.getTracks()) {
         await _pc!.addTrack(t, media);
       }
 
       _sig = WebSocketChannel.connect(Uri.parse(_signalUrl));
       _sig!.stream.listen((raw) async {
-        final data = jsonDecode(raw);
-        if (data['role'] == 'ros' && data['type'] == 'answer') {
-          final answer = RTCSessionDescription(data['sdp'], 'answer');
-          await _pc!.setRemoteDescription(answer);
-          if (mounted) setState(() => _webrtcOn = true);
-        }
+        try {
+          final data = jsonDecode(raw as String);
+          if (data['role'] == 'ros' && data['type'] == 'answer') {
+            final answer = RTCSessionDescription(data['sdp'], 'answer');
+            await _pc!.setRemoteDescription(answer);
+            if (mounted) {
+              setState(() {
+                _webrtcOn = true;
+                _status = 'Đang stream & nhận diện...';
+              });
+            }
+          }
+        } catch (_) {}
       });
 
       final offer = await _pc!.createOffer({'offerToReceiveVideo': false});
       await _pc!.setLocalDescription(offer);
-      _sig!.sink.add(jsonEncode({'role': 'flutter', 'type': 'offer', 'sdp': offer.sdp}));
 
-      if (mounted) setState(() => _webrtcOn = true);
+      _sig!.sink.add(jsonEncode({
+        'role': 'flutter',
+        'type': 'offer',
+        'sdp': offer.sdp,
+      }));
+
+      if (mounted) {
+        setState(() {
+          _webrtcOn = true;
+          _status = 'Đang stream & nhận diện...';
+        });
+      }
     } catch (e) {
-      if (mounted) setState(() => _status = 'WebRTC lỗi: $e');
+      if (!mounted) return;
+      setState(() {
+        _webrtcOn = false;
+        _status = 'WebRTC lỗi: $e';
+      });
     }
   }
 
-  Future<void> _stopWebRTC() async {
-    try { await _pc?.close(); } catch (_) {}
-    try { await _localRenderer.srcObject?.dispose(); _localRenderer.srcObject = null; } catch (_) {}
-    try { _sig?.sink.close(); } catch (_) {}
-    setState(() => _webrtcOn = false);
+  void _stopWebRTC() {
+    try {
+      _pc?.close();
+    } catch (_) {}
+    try {
+      _localRenderer.srcObject?.dispose();
+      _localRenderer.srcObject = null;
+    } catch (_) {}
+    try {
+      _sig?.sink.close();
+    } catch (_) {}
+
+    setState(() {
+      _webrtcOn = false;
+    });
   }
 
-  // ---------- UI ----------
+  // ---------- Điều hướng kết quả ----------
+  void _openResultPage() {
+    if (_captured == null && _annotatedBytes == null && _detections == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Chưa có dữ liệu để hiển thị')),
+      );
+      return;
+    }
+    Navigator.pushNamed(
+      context,
+      ResultPage.routeName,
+      arguments: {
+        'rawPath': _captured?.path,
+        'annotated': _annotatedBytes,
+        'detections': _detections,
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final connected = _ros.isConnected;
@@ -335,254 +400,252 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: const Color(0xFF43A047),
-        foregroundColor: Colors.white,
-        title: const Text('Phát hiện bệnh lá cà phê'),
+        title: const Text('Nhận diện bệnh lá cà phê'),
         actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 12),
-            child: Row(
-              children: [
-                Icon(Icons.circle, size: 12,
-                    color: connected && _lastPingOk ? Colors.lightGreenAccent : Colors.redAccent),
-                const SizedBox(width: 6),
-                Text(connected ? (_lastPingOk ? 'Online' : 'No ping') : 'Offline',
-                    style: const TextStyle(fontSize: 12)),
-                if (_lastRttMs != null) ...[
-                  const SizedBox(width: 6),
-                  Text('${_lastRttMs}ms', style: const TextStyle(fontSize: 12)),
-                ],
-              ],
-            ),
+          IconButton(
+            icon: const Icon(Icons.history),
+            onPressed: () => Navigator.pushNamed(context, '/history'),
           ),
+          const SizedBox(width: 4),
         ],
       ),
-      backgroundColor: const Color(0xFFF4F8F5),
-
-      bottomNavigationBar: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-          child: FilledButton.icon(
-            icon: const Icon(Icons.visibility),
-            label: const Text('Xem kết quả'),
-            onPressed: () {
-              if (_captured == null && _annotatedBytes == null && _detections == null) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Chưa có dữ liệu để hiển thị')),
-                );
-                return;
-              }
-              Navigator.pushNamed(
-                context,
-                ResultPage.routeName,
-                arguments: {
-                  'rawPath': _captured?.path,
-                  'annotated': _annotatedBytes,
-                  'detections': _detections,
-                },
-              );
-            },
-          ),
-        ),
-      ),
-
       body: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(_status, style: const TextStyle(color: Colors.black87)),
-              const SizedBox(height: 8),
-
-              // ---- 3 nút: Kết nối – Ngắt – Kiểm tra (CHUNG 1 HÀNG) ----
-              Row(
-                children: [
-                  Expanded(
-                    child: FilledButton.tonalIcon(
-                      icon: const Icon(Icons.power_settings_new),
-                      label: Text(connected ? 'Đã kết nối' : 'Kết nối'),
-                      onPressed: connected ? null : _connect,
-                    ),
+          padding: const EdgeInsets.all(16),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Trạng thái ROS
+                Card(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      icon: const Icon(Icons.link_off),
-                      label: const Text('Ngắt'),
-                      onPressed: connected ? _disconnect : null,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      icon: const Icon(Icons.wifi_tethering),
-                      label: const Text('Kiểm tra kết nối'),
-                      onPressed: connected ? _doPing : null,
-                    ),
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 12),
-
-              // ---- Điều khiển ảnh (chụp/chọn) ----
-              Row(
-                children: [
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      icon: const Icon(Icons.camera_alt),
-                      label: const Text('Chụp ảnh'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: canShoot ? const Color(0xFF43A047) : Colors.grey,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                        shape: const StadiumBorder(),
-                      ),
-                      onPressed: canShoot ? _captureAndSend : null,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      icon: const Icon(Icons.photo_library_outlined),
-                      label: const Text('Chọn ảnh'),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                        shape: const StadiumBorder(),
-                        foregroundColor: const Color(0xFF2E7D32),
-                      ),
-                      onPressed: canShoot ? _pickFromGalleryAndSend : null,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-
-              // ---- Điều khiển video file (stream frame) – CHUNG 1 HÀNG ----
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      icon: const Icon(Icons.video_library_outlined),
-                      label: Text(_isStreamingVideo ? 'Đang gửi video...' : 'Chọn video'),
-                      onPressed: (!canShoot || _isStreamingVideo) ? null : _pickVideoAndStreamFrames,
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                        shape: const StadiumBorder(),
-                        foregroundColor: const Color(0xFF2E7D32),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      icon: const Icon(Icons.stop_circle_outlined),
-                      label: const Text('Dừng gửi'),
-                      onPressed: _isStreamingVideo ? _stopVideoStream : null,
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                        shape: const StadiumBorder(),
-                        foregroundColor: Colors.red.shade700,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 8),
-
-              // ---- WebRTC real-time stream (KHÔNG HIỆN CÔNG TẮC) ----
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 6)],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const Text(
-                      'WebRTC (real-time camera → ROS)',
-                      style: TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    const SizedBox(height: 8),
-                    AspectRatio(
-                      aspectRatio: 3 / 4,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: Stack(
-                          fit: StackFit.expand,
-                          children: [
-                            Container(color: const Color(0xFFF3F5F7)),
-
-                            // Nền là video WebRTC
-                            if (_webrtcOn)
-                              RTCVideoView(
-                                _localRenderer,
-                                objectFit:
-                                RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
-                                mirror: false,
-                              ),
-
-                            // ✅ Luôn phủ ảnh annotated khi có (đè lên video)
-                            if (_showAnnotatedReturn && _annotatedBytes != null)
-                              Image.memory(_annotatedBytes!, fit: BoxFit.contain),
-
-                            // (Không hiển thị overlay bbox JSON nữa vì ta đã bật annotate)
-                            if (!_webrtcOn && _annotatedBytes == null)
-                              const Center(
-                                child: Text(
-                                  'Đang chờ WebRTC…',
-                                  style: TextStyle(color: Colors.black54),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Row(
+                      children: [
+                        Icon(
+                          connected ? Icons.cloud_done : Icons.cloud_off,
+                          color: connected ? Colors.green : Colors.red,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                connected ? 'Đã kết nối ROSBridge' : 'Chưa kết nối ROSBridge',
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 14,
                                 ),
                               ),
+                              const SizedBox(height: 2),
+                              Text(
+                                _status,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey.shade700,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              if (_lastRttMs != null)
+                                Text(
+                                  'Ping ROS: $_lastRttMs ms • ${_lastPingOk ? 'OK' : 'FAIL'}',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: _lastPingOk ? Colors.green.shade700 : Colors.red.shade700,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Column(
+                          children: [
+                            ElevatedButton.icon(
+                              icon: Icon(
+                                connected ? Icons.cloud_off : Icons.cloud,
+                                size: 18,
+                              ),
+                              label: Text(connected ? 'Ngắt' : 'Kết nối'),
+                              style: ElevatedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                minimumSize: Size.zero,
+                              ),
+                              onPressed: connected ? _disconnect : _connect,
+                            ),
+                            const SizedBox(height: 6),
+                            OutlinedButton.icon(
+                              icon: const Icon(Icons.wifi_tethering, size: 16),
+                              label: const Text(
+                                'Ping',
+                                style: TextStyle(fontSize: 12),
+                              ),
+                              style: OutlinedButton.styleFrom(
+                                padding:
+                                const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                minimumSize: Size.zero,
+                              ),
+                              onPressed: connected ? () => _doPing() : null,
+                            ),
                           ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // Hướng dẫn
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE8F5E9),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Text(
+                    '1. Kết nối tới ROSBridge.\n'
+                        '2. Chụp ảnh hoặc chọn ảnh lá cà phê.\n'
+                        '3. Bấm "Xem kết quả chi tiết" để xem bounding box và tên bệnh.\n'
+                        '4. Nếu muốn nhận diện liên tục theo video, hãy bấm "Mở camera stream".',
+                    style: TextStyle(fontSize: 13, height: 1.4),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Nút chụp / chọn ảnh
+                Row(
+                  children: [
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        icon: const Icon(Icons.camera_alt),
+                        label: const Text('Chụp ảnh'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor:
+                          canShoot ? const Color(0xFF43A047) : Colors.grey,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                          shape: const StadiumBorder(),
+                        ),
+                        onPressed: canShoot ? _captureAndSend : null,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.photo_library),
+                        label: const Text('Chọn ảnh'),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                          shape: const StadiumBorder(),
+                        ),
+                        onPressed: canShoot ? _pickFromGalleryAndSend : null,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+
+                // ---- Mở trang stream video real-time ----
+                Row(
+                  children: [
+                    Expanded(
+                      child: FilledButton.icon(
+                        icon: const Icon(Icons.videocam_outlined),
+                        label: const Text('Mở camera stream'),
+                        onPressed: !canShoot
+                            ? null
+                            : () {
+                          Navigator.pushNamed(
+                            context,
+                            VideoStreamPage.routeName,
+                          );
+                        },
+                        style: FilledButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                          shape: const StadiumBorder(),
                         ),
                       ),
                     ),
                   ],
                 ),
-              ),
 
-              const SizedBox(height: 12),
+                const SizedBox(height: 8),
 
-              // ---- Khu ảnh tĩnh (annotated/gốc) khi không dùng WebRTC ----
-              Expanded(
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final imgW =
-                    (_detections?['image']?['width'] as num?)?.toDouble();
-                    final imgH =
-                    (_detections?['image']?['height'] as num?)?.toDouble();
+                // ---- WebRTC real-time stream (KHÔNG HIỆN CÔNG TẮC) ----
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.03),
+                        blurRadius: 8,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Text(
+                        'WebRTC (real-time camera → ROS)',
+                        style: TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 8),
+                      AspectRatio(
+                        aspectRatio: 3 / 4,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              Container(color: const Color(0xFFF3F5F7)),
 
-                    if (_captured == null && _annotatedBytes == null && !_webrtcOn) {
-                      return const Center(
-                        child: Text(
-                            'Chưa có dữ liệu • Chụp/chọn ảnh, chọn video,\nhoặc bật WebRTC để stream real-time'),
-                      );
-                    }
+                              // Nền là video WebRTC
+                              if (_webrtcOn)
+                                RTCVideoView(
+                                  _localRenderer,
+                                  objectFit: RTCVideoViewObjectFit
+                                      .RTCVideoViewObjectFitContain,
+                                  mirror: false,
+                                ),
 
-                    return ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: FittedBox(
-                        fit: BoxFit.contain,
-                        child: SizedBox(
-                          width: imgW ?? constraints.maxWidth,
-                          height: imgH ?? constraints.maxHeight,
-                          child: _annotatedBytes != null
-                              ? Image.memory(_annotatedBytes!)
-                              : (_captured != null
-                              ? Image.file(File(_captured!.path))
-                              : const SizedBox()),
+                              // ✅ Luôn phủ ảnh annotated khi có (đè lên video)
+                              if (_showAnnotatedReturn && _annotatedBytes != null)
+                                Image.memory(_annotatedBytes!, fit: BoxFit.contain),
+
+                              if (!_webrtcOn && _annotatedBytes == null)
+                                const Center(
+                                  child: Text(
+                                    'Chưa có dữ liệu • Chụp/chọn ảnh hoặc mở trang stream để nhận diện real-time',
+                                    textAlign: TextAlign.center,
+                                  ),
+                                ),
+                            ],
+                          ),
                         ),
                       ),
-                    );
-                  },
+                    ],
+                  ),
                 ),
-              ),
-            ],
+
+                const SizedBox(height: 16),
+
+                // Nút xem kết quả
+                FilledButton.icon(
+                  icon: const Icon(Icons.visibility),
+                  label: const Text('Xem kết quả chi tiết'),
+                  onPressed: _openResultPage,
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
