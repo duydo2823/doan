@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+
 import 'package:uuid/uuid.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -21,70 +22,87 @@ class RosbridgeClient {
   final AnnotatedImageCallback onAnnotatedImage;
   final DetectionsCallback onDetections;
 
+  static const String imageTopic = '/app/image/compressed';
+  static const String annotatedTopic = '/app/annotated/compressed';
+  static const String detectionsTopic = '/app/detections_json';
+
+  final Uuid _uuid = const Uuid();
   WebSocketChannel? _ch;
-  StreamSubscription? _sub;
   bool _connected = false;
-  final _uuid = const Uuid();
-
-  final String publishTopic = '/app/image/compressed';
-  final String annotatedTopic = '/app/annotated/compressed';
-  final List<String> detectionTopics = const [
-    '/app/detections',
-    '/app/detections_json',
-  ];
-
-  final Map<String, Completer<Map<String, dynamic>>> _svcWaiters = {};
 
   bool get isConnected => _connected;
+
+  // Ping state
+  Completer<(bool, int?)>? _pendingPing;
+  String? _pingId;
+  DateTime? _pingStart;
 
   Future<void> connect() async {
     if (_connected) return;
     try {
       onStatus('Connecting to $url ...');
       _ch = WebSocketChannel.connect(Uri.parse(url));
-      _sub = _ch!.stream.listen(_onMessage, onError: (e) {
-        onStatus('WS error: $e');
-      }, onDone: () {
-        _connected = false;
-        onStatus('Disconnected');
-      });
-
-      await Future<void>.delayed(const Duration(milliseconds: 200));
       _connected = true;
-      onStatus('Connected');
+      onStatus('Connected to $url');
+      _listen();
 
-      _advertiseCompressedImage(publishTopic);
+      // Subscribed topics
       _subscribe(annotatedTopic);
-      for (final t in detectionTopics) {
-        _subscribe(t);
-      }
+      _subscribe(detectionsTopic);
     } catch (e) {
       _connected = false;
-      onStatus('Connect failed: $e');
+      onStatus('Connect error: $e');
       rethrow;
     }
   }
 
   void disconnect() {
-    _connected = false;
+    if (!_connected) return;
     try {
-      _unadvertise(publishTopic);
       _unsubscribe(annotatedTopic);
-      for (final t in detectionTopics) {
-        _unsubscribe(t);
-      }
+      _unsubscribe(detectionsTopic);
+      _ch?.sink.close();
     } catch (_) {}
-    _sub?.cancel();
-    _ch?.sink.close();
-    _sub = null;
-    _ch = null;
-
-    for (final c in _svcWaiters.values) {
-      if (!c.isCompleted) c.completeError('Disconnected');
-    }
-    _svcWaiters.clear();
+    _connected = false;
+    onStatus('Disconnected');
   }
 
+  /// Ping ROS qua /rosapi/get_time, trả (ok, rttMs?)
+  Future<(bool, int?)> ping() async {
+    if (!_connected || _ch == null) return (false, null);
+    if (_pendingPing != null) {
+      // Đang ping trước đó, trả về luôn future cũ
+      return _pendingPing!.future;
+    }
+
+    _pingId = 'ping-${_uuid.v4()}';
+    _pingStart = DateTime.now();
+    _pendingPing = Completer<(bool, int?)>();
+
+    _send({
+      'op': 'call_service',
+      'id': _pingId,
+      'service': '/rosapi/get_time',
+      'args': {},
+    });
+
+    try {
+      final result = await _pendingPing!.future
+          .timeout(const Duration(seconds: 3), onTimeout: () {
+        if (!_pendingPing!.isCompleted) {
+          _pendingPing!.complete((false, null));
+        }
+        return (false, null);
+      });
+      _pendingPing = null;
+      return result;
+    } catch (_) {
+      _pendingPing = null;
+      return (false, null);
+    }
+  }
+
+  /// Gửi ảnh JPEG (đã nén) lên topic imageTopic
   void publishJpeg(Uint8List jpegBytes) {
     if (!_connected || _ch == null) {
       onStatus('Not connected; drop frame');
@@ -93,106 +111,107 @@ class RosbridgeClient {
     final b64 = base64Encode(jpegBytes);
     _send({
       'op': 'publish',
-      'topic': publishTopic,
+      'id': _uuid.v4(),
+      'topic': imageTopic,
       'msg': {'format': 'jpeg', 'data': b64},
     });
-    onStatus('Frame sent: ${jpegBytes.length} bytes');
+    // Không log mỗi frame nữa để tránh spam
   }
 
-  Future<(bool ok, int? roundTripMs)> ping({
-    Duration timeout = const Duration(seconds: 2),
-  }) async {
-    if (!_connected || _ch == null) return (false, null);
-    final id = _uuid.v4();
-    final c = Completer<Map<String, dynamic>>();
-    _svcWaiters[id] = c;
-    final t0 = DateTime.now().millisecondsSinceEpoch;
-    _send({
-      'op': 'call_service',
-      'id': id,
-      'service': '/rosapi/get_time',
-      'args': {},
-    });
+  // ============ internal ============
 
-    try {
-      final resp = await c.future.timeout(timeout);
-      final result = (resp['result'] == true);
-      final t1 = DateTime.now().millisecondsSinceEpoch;
-      return (result, t1 - t0);
-    } catch (_) {
-      return (false, null);
-    } finally {
-      _svcWaiters.remove(id);
-    }
-  }
-
-  void _advertiseCompressedImage(String topic) {
+  void _subscribe(String topic) {
     _send({
-      'op': 'advertise',
+      'op': 'subscribe',
       'id': _uuid.v4(),
       'topic': topic,
-      'type': 'sensor_msgs/CompressedImage',
     });
   }
 
-  void _unadvertise(String topic) =>
-      _send({'op': 'unadvertise', 'id': _uuid.v4(), 'topic': topic});
-
-  void _subscribe(String topic) =>
-      _send({'op': 'subscribe', 'id': _uuid.v4(), 'topic': topic});
-
-  void _unsubscribe(String topic) =>
-      _send({'op': 'unsubscribe', 'id': _uuid.v4(), 'topic': topic});
+  void _unsubscribe(String topic) {
+    _send({
+      'op': 'unsubscribe',
+      'id': _uuid.v4(),
+      'topic': topic,
+    });
+  }
 
   void _send(Map<String, dynamic> jsonMsg) {
     if (_ch == null) return;
-    _ch!.sink.add(jsonEncode(jsonMsg));
+    try {
+      _ch!.sink.add(jsonEncode(jsonMsg));
+    } catch (e) {
+      onStatus('Send error: $e');
+    }
   }
 
-  void _onMessage(dynamic data) {
-    try {
-      final obj = jsonDecode(data as String) as Map<String, dynamic>;
-      if (obj['op'] == 'service_response' && obj['id'] is String) {
-        final id = obj['id'] as String;
-        final w = _svcWaiters[id];
-        if (w != null && !w.isCompleted) w.complete(obj);
-        return;
-      }
+  void _listen() {
+    _ch!.stream.listen(
+          (dynamic raw) {
+        try {
+          if (raw is! String) return;
+          final data = jsonDecode(raw);
+          if (data is! Map<String, dynamic>) return;
+          _handleMessage(data);
+        } catch (e) {
+          onStatus('Parse error: $e');
+        }
+      },
+      onDone: () {
+        _connected = false;
+        onStatus('Connection closed');
+      },
+      onError: (e) {
+        _connected = false;
+        onStatus('Connection error: $e');
+      },
+    );
+  }
 
-      if (obj['op'] == 'publish' && obj['topic'] is String) {
-        final topic = obj['topic'] as String;
-        final msg = obj['msg'];
+  void _handleMessage(Map<String, dynamic> msg) {
+    final op = msg['op'];
+    if (op == 'publish') {
+      final topic = msg['topic'] as String?;
+      final payload = msg['msg'];
 
-        if (topic == annotatedTopic && msg is Map) {
-          final b64 = msg['data'] as String?;
-          if (b64 != null) {
-            final bytes = base64Decode(b64);
+      if (topic == annotatedTopic && payload is Map) {
+        final fmt = payload['format'];
+        final data = payload['data'];
+        if (fmt == 'jpeg' && data is String) {
+          try {
+            final bytes = base64Decode(data);
             onAnnotatedImage(bytes);
             onStatus('Annotated image received (${bytes.length} bytes)');
+          } catch (e) {
+            onStatus('Decode annotated image error: $e');
           }
-          return;
         }
-
-        if (detectionTopics.contains(topic)) {
-          if (msg is Map && msg.containsKey('data')) {
-            final raw = msg['data']?.toString() ?? '{}';
-            try {
-              onDetections(jsonDecode(raw) as Map<String, dynamic>);
-              onStatus('Detections JSON received ✓');
-            } catch (_) {
-              onDetections({'raw': raw, 'note': 'not a valid JSON'});
-              onStatus('Detections received (raw string)');
-            }
-          } else if (msg is Map<String, dynamic>) {
-            onDetections(msg);
-            onStatus('Detections map received ✓');
-          } else {
-            onDetections({'raw': msg});
-          }
+      } else if (topic == detectionsTopic) {
+        if (payload is Map<String, dynamic>) {
+          onDetections(payload);
+          onStatus('Detections map received ✓');
+        } else if (payload is Map) {
+          onDetections(payload.cast<String, dynamic>());
+          onStatus('Detections map received ✓');
+        } else {
+          onDetections({'raw': payload});
         }
       }
-    } catch (e) {
-      onStatus('Parse message error: $e');
+    } else if (op == 'service_response') {
+      final id = msg['id'];
+      if (id == _pingId && _pendingPing != null) {
+        final now = DateTime.now();
+        final rtt = _pingStart != null
+            ? now.difference(_pingStart!).inMilliseconds
+            : null;
+        final ok = msg['result'] == true;
+        if (!_pendingPing!.isCompleted) {
+          _pendingPing!.complete((ok, rtt));
+        }
+        _pendingPing = null;
+        _pingId = null;
+        _pingStart = null;
+      }
     }
   }
 }

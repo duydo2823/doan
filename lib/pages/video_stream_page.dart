@@ -1,4 +1,3 @@
-// lib/pages/video_stream_page.dart
 import 'dart:async';
 import 'dart:typed_data';
 
@@ -9,8 +8,8 @@ import 'package:image/image.dart' as imglib;
 import '../services/rosbridge_client.dart';
 import 'result_page.dart';
 
-// ====== Cấu hình mạng (giống DetectIntroPage) ======
-const String ROS_IP = '172.20.10.3'; // ⚠️ Đổi IP nếu máy ROS đổi
+// Địa chỉ ROS
+const String ROS_IP = '172.20.10.3';
 const int ROSBRIDGE_PORT = 9090;
 
 class VideoStreamPage extends StatefulWidget {
@@ -23,23 +22,19 @@ class VideoStreamPage extends StatefulWidget {
 }
 
 class _VideoStreamPageState extends State<VideoStreamPage> {
-  // ROS
   late final RosbridgeClient _ros;
   String _status = 'Đang khởi tạo...';
   bool _rosConnected = false;
 
-  // Camera
   CameraController? _cameraController;
   bool _cameraReady = false;
 
-  // Stream frame liên tục
   bool _isStreaming = false;
   bool _sendingFrame = false;
   DateTime? _lastSent;
-  final Duration _minInterval = const Duration(
-      milliseconds: 300); // gửi ~3–4 fps, đủ mượt mà không quá nặng
+  final Duration _minInterval =
+  const Duration(milliseconds: 300); // ~3–4 fps
 
-  // Kết quả nhận diện
   Uint8List? _annotatedBytes;
   Map<String, dynamic>? _detections;
 
@@ -50,7 +45,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   }
 
   Future<void> _initAll() async {
-    // 1) Kết nối ROS
+    // 1) ROS
     _ros = RosbridgeClient(
       url: 'ws://$ROS_IP:$ROSBRIDGE_PORT',
       onStatus: (s) => setState(() => _status = s),
@@ -74,7 +69,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
       });
     }
 
-    // 2) Khởi tạo camera & stream
+    // 2) Camera + stream
     await _initCameraAndStream();
   }
 
@@ -89,7 +84,6 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         return;
       }
 
-      // Ưu tiên camera sau
       final backCamera = cameras.firstWhere(
             (c) => c.lensDirection == CameraLensDirection.back,
         orElse: () => cameras.first,
@@ -100,8 +94,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         backCamera,
         ResolutionPreset.medium,
         enableAudio: false,
-        imageFormatGroup:
-        ImageFormatGroup.bgra8888, // iOS: BGRA, dễ convert sang JPEG
+        imageFormatGroup: ImageFormatGroup.bgra8888,
       );
 
       await _cameraController!.initialize();
@@ -112,7 +105,6 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         _status = 'Camera đã sẵn sàng, đang stream & nhận diện...';
       });
 
-      // 3) Bắt đầu stream frame liên tục
       await _startImageStream();
     } catch (e) {
       if (!mounted) return;
@@ -139,7 +131,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
       final now = DateTime.now();
       if (_lastSent != null &&
           now.difference(_lastSent!) < _minInterval) {
-        return; // throttle
+        return;
       }
       if (_sendingFrame) return;
 
@@ -174,16 +166,14 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
     }
   }
 
-  // Convert CameraImage (BGRA) -> JPEG
+  // Chuyển CameraImage BGRA -> JPEG
   Uint8List? _convertCameraImageToJpeg(CameraImage image) {
-    // Chỉ xử lý BGRA cho iOS (imageFormatGroup.bgra8888)
     if (image.format.group != ImageFormatGroup.bgra8888) {
-      // Nếu sau này chạy Android, cần thêm nhánh YUV420.
       return null;
     }
 
     final plane = image.planes[0];
-    final bytes = plane.bytes; // BGRA
+    final bytes = plane.bytes;
 
     final imglib.Image img = imglib.Image.fromBytes(
       bytes: bytes.buffer,
@@ -260,7 +250,6 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      // Preview video
                       if (_cameraReady && _cameraController != null)
                         CameraPreview(_cameraController!)
                       else
@@ -271,8 +260,6 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                             textAlign: TextAlign.center,
                           ),
                         ),
-
-                      // Ảnh annotated từ ROS đè lên video
                       if (_annotatedBytes != null)
                         Image.memory(
                           _annotatedBytes!,

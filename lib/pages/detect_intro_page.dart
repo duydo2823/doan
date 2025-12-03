@@ -1,4 +1,3 @@
-// lib/pages/detect_intro_page.dart
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -7,25 +6,17 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
-
-// Video file → stream từng frame JPEG (dùng cho video từ album)
 import 'package:video_player/video_player.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
-
-// WebRTC real-time camera
-import 'package:flutter_webrtc/flutter_webrtc.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../services/rosbridge_client.dart';
 import 'result_page.dart';
 import 'video_stream_page.dart';
 
-// ====== Cấu hình mạng ======
-const String ROS_IP = '192.168.1.251'; // ⚠️ ĐỔI IP MÁY ROS
+// Địa chỉ ROS
+const String ROS_IP = '172.20.10.3';
 const int ROSBRIDGE_PORT = 9090;
-const int SIGNALING_PORT = 8765;
 
-// ====== Map tên bệnh tiếng Việt ======
 const Map<String, String> kDiseaseVI = {
   'Cercospora': 'Đốm mắt cua (Cercospora)',
   'Miner': 'Sâu đục lá (Leaf miner)',
@@ -43,44 +34,23 @@ class DetectIntroPage extends StatefulWidget {
 }
 
 class _DetectIntroPageState extends State<DetectIntroPage> {
-  // Image picker
   final ImagePicker _picker = ImagePicker();
 
-  // ROS bridge
   late final RosbridgeClient _ros;
   String _status = 'Disconnected';
   bool _lastPingOk = false;
   int? _lastRttMs;
   Timer? _hb;
 
-  // Dữ liệu hiển thị
-  XFile? _captured; // ảnh gốc vừa chụp/chọn
-  Uint8List? _annotatedBytes; // ảnh annotated ROS trả về
-  Map<String, dynamic>? _detections; // JSON detections từ ROS
-
-  // Stream video từ file (album)
-  bool _isStreamingVideo = false;
-
-  // WebRTC (real-time)
-  RTCPeerConnection? _pc;
-  final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
-  WebSocketChannel? _sig;
-  bool _webrtcOn = false;
-
-  // WebRTC real-time (không auto start trên trang này — stream chính nằm ở VideoStreamPage)
-  final bool _autoStartWebRTC = false;
-
-  // ✅ Luôn bật hiển thị ảnh annotate (không cho tắt trên UI)
-  final bool _showAnnotatedReturn = true;
+  XFile? _captured;
+  Uint8List? _annotatedBytes;
+  Map<String, dynamic>? _detections;
 
   String get _rosUrl => 'ws://$ROS_IP:$ROSBRIDGE_PORT';
-  String get _signalUrl => 'ws://$ROS_IP:$SIGNALING_PORT';
 
-  // ---------- Lifecycle ----------
   @override
   void initState() {
     super.initState();
-    _initRenderers();
     _ros = RosbridgeClient(
       url: _rosUrl,
       onStatus: (s) => setState(() => _status = s),
@@ -89,23 +59,20 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     );
   }
 
-  Future<void> _initRenderers() async {
-    await _localRenderer.initialize(); // tránh khung trắng khi hiển thị RTCVideoView
-  }
-
   @override
   void dispose() {
     _stopHeartbeat();
     _ros.disconnect();
-    _stopWebRTC();
-    _localRenderer.dispose();
     super.dispose();
   }
 
-  // ---------- ROS heartbeat ----------
+  // ========= ROS heartbeat & ping =========
+
   void _startHeartbeat() {
     _hb?.cancel();
-    _hb = Timer.periodic(const Duration(seconds: 5), (_) => _doPing(silent: true));
+    _hb = Timer.periodic(const Duration(seconds: 5), (_) {
+      _doPing(silent: true);
+    });
   }
 
   void _stopHeartbeat() {
@@ -118,18 +85,12 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       await _ros.connect();
       _startHeartbeat();
       await _doPing();
-
-      // Trước đây auto start WebRTC ở đây, giờ tắt vì stream ở trang VideoStreamPage
-      if (_autoStartWebRTC && !_webrtcOn) {
-        _startWebRTC();
-      }
     } catch (_) {}
   }
 
   void _disconnect() {
     _stopHeartbeat();
     _ros.disconnect();
-    _stopWebRTC();
     setState(() {
       _lastPingOk = false;
       _lastRttMs = null;
@@ -145,12 +106,14 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     if (!silent) {
       final msg = ok ? 'ROS OK • RTT ${rtt}ms' : 'Không thể ping ROS';
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(msg)));
       }
     }
   }
 
-  // ---------- Ảnh: chụp / chọn & gửi ----------
+  // ========= GỬI ẢNH TĨNH =========
+
   Future<void> _captureAndSend() async {
     if (!_ros.isConnected || !_lastPingOk) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -224,8 +187,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     }
   }
 
-  // ---------- Video file: stream từng frame (album) ----------
-  // (Chức năng này hiện đã được thay bằng trang stream realtime, nhưng vẫn giữ code nếu sau này cần lại)
+  // (Tuỳ chọn) Stream từng frame từ 1 file video trong gallery – không dùng UI nữa nhưng giữ lại nếu cần
   Future<void> _pickVideoAndStreamFrames() async {
     if (!_ros.isConnected || !_lastPingOk) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -248,8 +210,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
         _captured = null;
         _annotatedBytes = null;
         _detections = null;
-        _isStreamingVideo = true;
-        _status = 'Đang gửi frame từ video...';
+        _status = 'Đang gửi frame từ video (gallery)...';
       });
 
       final totalMs = dur.inMilliseconds;
@@ -258,7 +219,6 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       const maxH = 720;
 
       for (int t = 0; t < totalMs; t += stepMs) {
-        if (!_isStreamingVideo) break;
         final bytes = await VideoThumbnail.thumbnailData(
           video: xv.path,
           timeMs: t,
@@ -273,8 +233,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
       if (mounted) {
         setState(() {
-          _isStreamingVideo = false;
-          _status = 'Đã gửi xong frame từ video';
+          _status = 'Đã gửi xong frame từ video (gallery)';
         });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Đã gửi xong các frame từ video.')),
@@ -283,98 +242,12 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _isStreamingVideo = false;
           _status = 'Lỗi xử lý video: $e';
         });
       }
     }
   }
 
-  void _stopVideoStream() {
-    setState(() {
-      _isStreamingVideo = false;
-    });
-  }
-
-  // ---------- WebRTC real-time ----------
-  Future<void> _startWebRTC() async {
-    try {
-      final media = await navigator.mediaDevices.getUserMedia({
-        'video': {
-          'facingMode': 'environment',
-          'width': {'ideal': 1280},
-          'height': {'ideal': 720},
-          'frameRate': {'ideal': 24},
-        },
-        'audio': false,
-      });
-
-      _localRenderer.srcObject = media;
-
-      _pc = await createPeerConnection({'sdpSemantics': 'unified-plan'});
-      for (final t in media.getTracks()) {
-        await _pc!.addTrack(t, media);
-      }
-
-      _sig = WebSocketChannel.connect(Uri.parse(_signalUrl));
-      _sig!.stream.listen((raw) async {
-        try {
-          final data = jsonDecode(raw as String);
-          if (data['role'] == 'ros' && data['type'] == 'answer') {
-            final answer = RTCSessionDescription(data['sdp'], 'answer');
-            await _pc!.setRemoteDescription(answer);
-            if (mounted) {
-              setState(() {
-                _webrtcOn = true;
-                _status = 'Đang stream & nhận diện...';
-              });
-            }
-          }
-        } catch (_) {}
-      });
-
-      final offer = await _pc!.createOffer({'offerToReceiveVideo': false});
-      await _pc!.setLocalDescription(offer);
-
-      _sig!.sink.add(jsonEncode({
-        'role': 'flutter',
-        'type': 'offer',
-        'sdp': offer.sdp,
-      }));
-
-      if (mounted) {
-        setState(() {
-          _webrtcOn = true;
-          _status = 'Đang stream & nhận diện...';
-        });
-      }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _webrtcOn = false;
-        _status = 'WebRTC lỗi: $e';
-      });
-    }
-  }
-
-  void _stopWebRTC() {
-    try {
-      _pc?.close();
-    } catch (_) {}
-    try {
-      _localRenderer.srcObject?.dispose();
-      _localRenderer.srcObject = null;
-    } catch (_) {}
-    try {
-      _sig?.sink.close();
-    } catch (_) {}
-
-    setState(() {
-      _webrtcOn = false;
-    });
-  }
-
-  // ---------- Điều hướng kết quả ----------
   void _openResultPage() {
     if (_captured == null && _annotatedBytes == null && _detections == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -397,6 +270,20 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   Widget build(BuildContext context) {
     final connected = _ros.isConnected;
     final canShoot = connected && _lastPingOk;
+
+    Widget preview;
+    if (_annotatedBytes != null) {
+      preview = Image.memory(_annotatedBytes!, fit: BoxFit.contain);
+    } else if (_captured != null) {
+      preview = Image.file(File(_captured!.path), fit: BoxFit.contain);
+    } else {
+      preview = const Center(
+        child: Text(
+          'Chưa có ảnh.\nHãy chụp hoặc chọn ảnh, hoặc mở camera stream.',
+          textAlign: TextAlign.center,
+        ),
+      );
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -435,7 +322,9 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                connected ? 'Đã kết nối ROSBridge' : 'Chưa kết nối ROSBridge',
+                                connected
+                                    ? 'Đã kết nối ROSBridge'
+                                    : 'Chưa kết nối ROSBridge',
                                 style: const TextStyle(
                                   fontWeight: FontWeight.w600,
                                   fontSize: 14,
@@ -455,7 +344,9 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                                   'Ping ROS: $_lastRttMs ms • ${_lastPingOk ? 'OK' : 'FAIL'}',
                                   style: TextStyle(
                                     fontSize: 11,
-                                    color: _lastPingOk ? Colors.green.shade700 : Colors.red.shade700,
+                                    color: _lastPingOk
+                                        ? Colors.green.shade700
+                                        : Colors.red.shade700,
                                   ),
                                 ),
                             ],
@@ -471,21 +362,23 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                               ),
                               label: Text(connected ? 'Ngắt' : 'Kết nối'),
                               style: ElevatedButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 8),
                                 minimumSize: Size.zero,
                               ),
                               onPressed: connected ? _disconnect : _connect,
                             ),
                             const SizedBox(height: 6),
                             OutlinedButton.icon(
-                              icon: const Icon(Icons.wifi_tethering, size: 16),
+                              icon:
+                              const Icon(Icons.wifi_tethering, size: 16),
                               label: const Text(
                                 'Ping',
                                 style: TextStyle(fontSize: 12),
                               ),
                               style: OutlinedButton.styleFrom(
-                                padding:
-                                const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 6),
                                 minimumSize: Size.zero,
                               ),
                               onPressed: connected ? () => _doPing() : null,
@@ -507,9 +400,9 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                   ),
                   child: const Text(
                     '1. Kết nối tới ROSBridge.\n'
-                        '2. Chụp ảnh hoặc chọn ảnh lá cà phê.\n'
+                        '2. Chụp ảnh hoặc chọn ảnh lá cà phê để nhận diện.\n'
                         '3. Bấm "Xem kết quả chi tiết" để xem bounding box và tên bệnh.\n'
-                        '4. Nếu muốn nhận diện liên tục theo video, hãy bấm "Mở camera stream".',
+                        '4. Nếu muốn nhận diện liên tục theo video, bấm "Mở camera stream".',
                     style: TextStyle(fontSize: 13, height: 1.4),
                   ),
                 ),
@@ -523,10 +416,12 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                         icon: const Icon(Icons.camera_alt),
                         label: const Text('Chụp ảnh'),
                         style: ElevatedButton.styleFrom(
-                          backgroundColor:
-                          canShoot ? const Color(0xFF43A047) : Colors.grey,
+                          backgroundColor: canShoot
+                              ? const Color(0xFF43A047)
+                              : Colors.grey,
                           foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 14),
                           shape: const StadiumBorder(),
                         ),
                         onPressed: canShoot ? _captureAndSend : null,
@@ -538,7 +433,8 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                         icon: const Icon(Icons.photo_library),
                         label: const Text('Chọn ảnh'),
                         style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 14),
                           shape: const StadiumBorder(),
                         ),
                         onPressed: canShoot ? _pickFromGalleryAndSend : null,
@@ -548,33 +444,27 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                 ),
                 const SizedBox(height: 8),
 
-                // ---- Mở trang stream video real-time ----
-                Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton.icon(
-                        icon: const Icon(Icons.videocam_outlined),
-                        label: const Text('Mở camera stream'),
-                        onPressed: !canShoot
-                            ? null
-                            : () {
-                          Navigator.pushNamed(
-                            context,
-                            VideoStreamPage.routeName,
-                          );
-                        },
-                        style: FilledButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                          shape: const StadiumBorder(),
-                        ),
-                      ),
-                    ),
-                  ],
+                // Nút mở trang stream video
+                FilledButton.icon(
+                  icon: const Icon(Icons.videocam_outlined),
+                  label: const Text('Mở camera stream'),
+                  onPressed: !canShoot
+                      ? null
+                      : () {
+                    Navigator.pushNamed(
+                      context,
+                      VideoStreamPage.routeName,
+                    );
+                  },
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 14),
+                    shape: const StadiumBorder(),
+                  ),
                 ),
+                const SizedBox(height: 16),
 
-                const SizedBox(height: 8),
-
-                // ---- WebRTC real-time stream (KHÔNG HIỆN CÔNG TẮC) ----
+                // Preview ảnh / annotated
                 Container(
                   padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
@@ -588,54 +478,16 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                       ),
                     ],
                   ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      const Text(
-                        'WebRTC (real-time camera → ROS)',
-                        style: TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                      const SizedBox(height: 8),
-                      AspectRatio(
-                        aspectRatio: 3 / 4,
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: Stack(
-                            fit: StackFit.expand,
-                            children: [
-                              Container(color: const Color(0xFFF3F5F7)),
-
-                              // Nền là video WebRTC
-                              if (_webrtcOn)
-                                RTCVideoView(
-                                  _localRenderer,
-                                  objectFit: RTCVideoViewObjectFit
-                                      .RTCVideoViewObjectFitContain,
-                                  mirror: false,
-                                ),
-
-                              // ✅ Luôn phủ ảnh annotated khi có (đè lên video)
-                              if (_showAnnotatedReturn && _annotatedBytes != null)
-                                Image.memory(_annotatedBytes!, fit: BoxFit.contain),
-
-                              if (!_webrtcOn && _annotatedBytes == null)
-                                const Center(
-                                  child: Text(
-                                    'Chưa có dữ liệu • Chụp/chọn ảnh hoặc mở trang stream để nhận diện real-time',
-                                    textAlign: TextAlign.center,
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ],
+                  child: AspectRatio(
+                    aspectRatio: 3 / 4,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: preview,
+                    ),
                   ),
                 ),
-
                 const SizedBox(height: 16),
 
-                // Nút xem kết quả
                 FilledButton.icon(
                   icon: const Icon(Icons.visibility),
                   label: const Text('Xem kết quả chi tiết'),

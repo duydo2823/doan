@@ -3,10 +3,10 @@ import 'package:flutter/material.dart';
 import 'pages/detect_intro_page.dart';
 import 'pages/result_page.dart';
 import 'pages/history_page.dart';
-import 'pages/video_stream_page.dart'; // ✅ trang stream mới
+import 'pages/video_stream_page.dart'; // trang stream mới
 
 Future<void> main() async {
-  // BẮT BUỘC khi dùng plugin camera / các plugin native khác
+  // Bắt buộc khi dùng plugin camera, v.v.
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const MyApp());
 }
@@ -31,7 +31,7 @@ class MyApp extends StatelessWidget {
         DetectIntroPage.routeName: (_) => const DetectIntroPage(),
         ResultPage.routeName: (_) => const ResultPage(),
         '/history': (_) => const HistoryPage(),
-        VideoStreamPage.routeName: (_) => const VideoStreamPage(), // ✅ route mới
+        VideoStreamPage.routeName: (_) => const VideoStreamPage(),
       },
     );
   }
@@ -48,7 +48,7 @@ class HomePage extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            // LOGO trên cùng
+            // LOGO
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
               child: Row(
@@ -100,7 +100,6 @@ class HomePage extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 24),
-
                     Row(
                       children: [
                         Icon(Icons.sensors, color: Colors.green.shade700),
@@ -138,10 +137,8 @@ class HomePage extends StatelessWidget {
                         foregroundColor: Colors.white,
                         minimumSize: const Size(double.infinity, 48),
                       ),
-                      onPressed: () => Navigator.pushNamed(
-                        context,
-                        DetectIntroPage.routeName,
-                      ),
+                      onPressed: () =>
+                          Navigator.pushNamed(context, DetectIntroPage.routeName),
                     ),
                     const SizedBox(height: 12),
 
@@ -153,8 +150,7 @@ class HomePage extends StatelessWidget {
                         minimumSize: const Size(double.infinity, 48),
                         foregroundColor: Colors.green.shade800,
                       ),
-                      onPressed: () =>
-                          Navigator.pushNamed(context, '/history'),
+                      onPressed: () => Navigator.pushNamed(context, '/history'),
                     ),
                   ],
                 ),
