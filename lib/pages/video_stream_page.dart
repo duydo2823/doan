@@ -1,19 +1,16 @@
 // lib/pages/video_stream_page.dart
 import 'dart:async';
-import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../services/rosbridge_client.dart';
 import 'result_page.dart';
 
-// ====== Cấu hình mạng (giữ giống DetectIntroPage) ======
-const String ROS_IP = '192.168.1.251'; // ⚠️ Đổi IP nếu máy ROS đổi IP
+// ====== Cấu hình mạng (giống DetectIntroPage) ======
+const String ROS_IP = '172.20.10.3'; // ⚠️ Đổi IP nếu máy ROS đổi IP
 const int ROSBRIDGE_PORT = 9090;
-const int SIGNALING_PORT = 8765;
 
 class VideoStreamPage extends StatefulWidget {
   static const routeName = '/video-stream';
@@ -30,18 +27,18 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   String _status = 'Đang khởi tạo...';
   bool _rosConnected = false;
 
-  // WebRTC
-  final RTCVideoRenderer _localRenderer = RTCVideoRenderer();
-  RTCPeerConnection? _pc;
-  WebSocketChannel? _sigChannel;
-  bool _webrtcOn = false;
+  // Camera
+  CameraController? _cameraController;
+  bool _cameraReady = false;
+
+  // Gửi frame định kỳ
+  Timer? _frameTimer;
+  bool _sendingFrame = false;
+  Duration _frameInterval = const Duration(milliseconds: 800); // ~1.2 fps
 
   // Kết quả nhận diện
   Uint8List? _annotatedBytes;
   Map<String, dynamic>? _detections;
-
-  String get _rosUrl => 'ws://$ROS_IP:$ROSBRIDGE_PORT';
-  String get _signalUrl => 'ws://$ROS_IP:$SIGNALING_PORT';
 
   @override
   void initState() {
@@ -50,11 +47,9 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   }
 
   Future<void> _initAll() async {
-    await _localRenderer.initialize();
-
     // 1) Kết nối ROS
     _ros = RosbridgeClient(
-      url: _rosUrl,
+      url: 'ws://$ROS_IP:$ROSBRIDGE_PORT',
       onStatus: (s) => setState(() => _status = s),
       onAnnotatedImage: (jpeg) => setState(() => _annotatedBytes = jpeg),
       onDetections: (m) => setState(() => _detections = m),
@@ -66,11 +61,8 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
       if (!mounted) return;
       setState(() {
         _rosConnected = true;
-        _status = 'Đã kết nối ROS, đang xin quyền camera...';
+        _status = 'Đã kết nối ROS, đang mở camera...';
       });
-
-      // 2) Bắt đầu WebRTC
-      await _startWebRTC();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -78,115 +70,96 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         _status = 'Không kết nối được ROS: $e';
       });
     }
+
+    // 2) Mở camera
+    await _initCamera();
+    // 3) Bắt đầu gửi frame
+    _startFrameTimer();
   }
 
-  // ====== WebRTC ======
-  Future<void> _startWebRTC() async {
+  Future<void> _initCamera() async {
     try {
-      setState(() {
-        _webrtcOn = false;
-        _status = 'Đang xin quyền camera...';
-      });
-
-      final media = await navigator.mediaDevices.getUserMedia({
-        'video': {
-          'facingMode': 'environment',
-          'width': {'ideal': 1280},
-          'height': {'ideal': 720},
-          'frameRate': {'ideal': 24},
-        },
-        'audio': false,
-      });
-
-      // Gán stream cho renderer + refresh UI
-      _localRenderer.srcObject = media;
-      setState(() {
-        _status = 'Đã lấy được camera, đang tạo kết nối WebRTC...';
-      });
-
-      // Tạo peer connection
-      _pc = await createPeerConnection({'sdpSemantics': 'unified-plan'});
-      for (final track in media.getTracks()) {
-        await _pc!.addTrack(track, media);
-      }
-
-      // WebSocket signaling với ROS
-      _sigChannel = WebSocketChannel.connect(Uri.parse(_signalUrl));
-      _sigChannel!.stream.listen((raw) async {
-        try {
-          final data = jsonDecode(raw as String);
-          if (data is Map &&
-              data['role'] == 'ros' &&
-              data['type'] == 'answer') {
-            final answer =
-            RTCSessionDescription(data['sdp'] as String, 'answer');
-            await _pc?.setRemoteDescription(answer);
-            if (mounted) {
-              setState(() {
-                _webrtcOn = true;
-                _status = 'Đang stream & nhận diện...';
-              });
-            }
-          }
-        } catch (_) {}
-      });
-
-      // Gửi offer
-      final offer = await _pc!.createOffer({'offerToReceiveVideo': false});
-      await _pc!.setLocalDescription(offer);
-
-      _sigChannel!.sink.add(jsonEncode({
-        'role': 'flutter',
-        'type': 'offer',
-        'sdp': offer.sdp,
-      }));
-
-      if (mounted) {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
         setState(() {
-          _webrtcOn = true;
-          _status = 'Đang stream & nhận diện...';
+          _cameraReady = false;
+          _status = 'Không tìm thấy camera trên thiết bị.';
         });
+        return;
       }
+
+      // Ưu tiên camera sau
+      final backCamera = cameras.firstWhere(
+            (c) => c.lensDirection == CameraLensDirection.back,
+        orElse: () => cameras.first,
+      );
+
+      _cameraController = CameraController(
+        backCamera,
+        ResolutionPreset.medium,
+        enableAudio: false,
+      );
+
+      await _cameraController!.initialize();
+
+      if (!mounted) return;
+      setState(() {
+        _cameraReady = true;
+        _status = 'Camera đã sẵn sàng, đang stream & nhận diện...';
+      });
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _webrtcOn = false;
-        _status = 'WebRTC lỗi (getUserMedia hoặc signaling): $e';
+        _cameraReady = false;
+        _status = 'Lỗi khởi tạo camera: $e';
       });
     }
   }
 
-  Future<void> _stopWebRTC() async {
-    try {
-      await _pc?.close();
-    } catch (_) {}
-    try {
-      await _localRenderer.srcObject?.dispose();
-      _localRenderer.srcObject = null;
-    } catch (_) {}
-    try {
-      await _sigChannel?.sink.close();
-    } catch (_) {}
+  void _startFrameTimer() {
+    _frameTimer?.cancel();
+    if (!_rosConnected || !_cameraReady) return;
 
-    if (mounted) {
-      setState(() {
-        _webrtcOn = false;
-        _status = 'Đã dừng stream.';
-      });
+    _frameTimer = Timer.periodic(_frameInterval, (_) => _captureAndSendFrame());
+  }
+
+  void _stopFrameTimer() {
+    _frameTimer?.cancel();
+    _frameTimer = null;
+  }
+
+  Future<void> _captureAndSendFrame() async {
+    if (!_rosConnected || !_cameraReady || _sendingFrame) return;
+    final controller = _cameraController;
+    if (controller == null || !controller.value.isInitialized) return;
+
+    try {
+      _sendingFrame = true;
+      final XFile file = await controller.takePicture();
+      final bytes = await file.readAsBytes();
+
+      // Gửi JPEG lên ROS
+      _ros.publishJpeg(bytes);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _status = 'Lỗi gửi frame: $e');
+      }
+    } finally {
+      _sendingFrame = false;
     }
   }
 
   @override
   void dispose() {
-    _stopWebRTC();
+    _frameTimer?.cancel();
+    _cameraController?.dispose();
     _ros.disconnect();
-    _localRenderer.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final hasFrame = _annotatedBytes != null || _webrtcOn;
+    final hasFrame = _annotatedBytes != null || _cameraReady;
 
     return Scaffold(
       appBar: AppBar(
@@ -233,28 +206,16 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                 style: const TextStyle(fontSize: 14, color: Colors.black54),
               ),
               const SizedBox(height: 8),
-              // Khung hiển thị video + ảnh annotated
               Expanded(
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      // Video camera local
-                      if (_localRenderer.srcObject != null)
-                        RTCVideoView(
-                          _localRenderer,
-                          objectFit: RTCVideoViewObjectFit
-                              .RTCVideoViewObjectFitContain,
-                          mirror: false,
-                        ),
-
-                      // Overlay ảnh annotated từ ROS
-                      if (_annotatedBytes != null)
-                        Image.memory(_annotatedBytes!, fit: BoxFit.contain),
-
-                      if (_localRenderer.srcObject == null &&
-                          _annotatedBytes == null)
+                      // Preview camera
+                      if (_cameraReady && _cameraController != null)
+                        CameraPreview(_cameraController!)
+                      else
                         const Center(
                           child: Text(
                             'Đang khởi tạo camera...\n'
@@ -262,6 +223,10 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                             textAlign: TextAlign.center,
                           ),
                         ),
+
+                      // Ảnh annotated từ ROS (nếu có) đè lên
+                      if (_annotatedBytes != null)
+                        Image.memory(_annotatedBytes!, fit: BoxFit.contain),
                     ],
                   ),
                 ),
@@ -274,8 +239,14 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                       icon: const Icon(Icons.refresh),
                       label: const Text('Khởi động lại stream'),
                       onPressed: () async {
-                        await _stopWebRTC();
-                        await _startWebRTC();
+                        _stopFrameTimer();
+                        await _cameraController?.dispose();
+                        setState(() {
+                          _cameraReady = false;
+                          _annotatedBytes = null;
+                        });
+                        await _initCamera();
+                        _startFrameTimer();
                       },
                     ),
                   ),
@@ -284,7 +255,12 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                     child: OutlinedButton.icon(
                       icon: const Icon(Icons.stop_circle_outlined),
                       label: const Text('Dừng stream'),
-                      onPressed: _webrtcOn ? _stopWebRTC : null,
+                      onPressed: () {
+                        _stopFrameTimer();
+                        setState(() {
+                          _status = 'Đã dừng stream.';
+                        });
+                      },
                     ),
                   ),
                 ],
