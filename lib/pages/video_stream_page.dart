@@ -39,13 +39,13 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   final Duration _minInterval =
   const Duration(milliseconds: 300); // ~3–4 fps
 
-  // Kích thước gốc frame gửi sang ROS (để scale bbox)
+  // Kích thước frame nguồn (để scale bbox)
   int? _srcWidth;
   int? _srcHeight;
 
   // Dữ liệu nhận lại
-  Uint8List? _annotatedBytes;                 // vẫn giữ để xem ở trang kết quả
-  Map<String, dynamic>? _detections;          // JSON cho bounding box
+  Uint8List? _annotatedBytes;           // ảnh ROS vẽ bbox sẵn
+  Map<String, dynamic>? _detections;    // JSON bbox (nếu có)
 
   @override
   void initState() {
@@ -175,7 +175,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
     }
   }
 
-  // Chuyển CameraImage BGRA -> JPEG
+  // CameraImage BGRA -> JPEG
   Uint8List? _convertCameraImageToJpeg(CameraImage image) {
     if (image.format.group != ImageFormatGroup.bgra8888) {
       return null;
@@ -252,8 +252,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
             children: [
               Text(
                 _status,
-                style:
-                const TextStyle(fontSize: 14, color: Colors.black54),
+                style: const TextStyle(fontSize: 14, color: Colors.black54),
               ),
               const SizedBox(height: 8),
               Expanded(
@@ -268,6 +267,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                       return Stack(
                         fit: StackFit.expand,
                         children: [
+                          // VIDEO GỐC
                           if (_cameraReady && _cameraController != null)
                             CameraPreview(_cameraController!)
                           else
@@ -278,8 +278,15 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                                 textAlign: TextAlign.center,
                               ),
                             ),
-                          // ⛔ KHÔNG vẽ annotated image đè lên video nữa
-                          // Chỉ vẽ bounding box dựa trên detections_json
+
+                          // ẢNH ANNOTATED TỪ ROS (có bbox vẽ sẵn) ĐÈ LÊN
+                          if (_annotatedBytes != null)
+                            Image.memory(
+                              _annotatedBytes!,
+                              fit: BoxFit.contain,
+                            ),
+
+                          // Nếu sau này ROS gửi detections_json thì vẽ thêm bbox
                           if (_detections != null &&
                               _srcWidth != null &&
                               _srcHeight != null)
@@ -328,7 +335,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   }
 }
 
-/// Vẽ bounding box + nhãn bệnh lên video, dùng dữ liệu từ detections_json
+/// Vẽ bbox từ detections_json (nếu có)
 class _DetectionPainter extends CustomPainter {
   final Map<String, dynamic> detections;
   final double srcWidth;
@@ -367,7 +374,6 @@ class _DetectionPainter extends CustomPainter {
       final score =
       (m['score'] is num) ? (m['score'] as num).toDouble() : 0.0;
 
-      // bbox: [x1, y1, x2, y2] theo toạ độ gốc
       final x1 = bbox[0] * scaleX;
       final y1 = bbox[1] * scaleY;
       final x2 = bbox[2] * scaleX;
@@ -382,7 +388,6 @@ class _DetectionPainter extends CustomPainter {
       final label =
           '${cls.isEmpty ? 'Object' : cls} ${(score * 100).toStringAsFixed(1)}%';
 
-      // Vẽ label: nền đỏ + chữ trắng
       final textSpan = TextSpan(
         text: label,
         style: const TextStyle(
