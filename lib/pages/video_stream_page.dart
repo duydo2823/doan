@@ -52,6 +52,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   Future<void> _initAll() async {
     await _localRenderer.initialize();
 
+    // 1) Kết nối ROS
     _ros = RosbridgeClient(
       url: _rosUrl,
       onStatus: (s) => setState(() => _status = s),
@@ -60,12 +61,15 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
     );
 
     try {
+      setState(() => _status = 'Đang kết nối ROS...');
       await _ros.connect();
       if (!mounted) return;
       setState(() {
         _rosConnected = true;
-        _status = 'Đã kết nối ROS, đang bật WebRTC...';
+        _status = 'Đã kết nối ROS, đang xin quyền camera...';
       });
+
+      // 2) Bắt đầu WebRTC
       await _startWebRTC();
     } catch (e) {
       if (!mounted) return;
@@ -79,6 +83,11 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   // ====== WebRTC ======
   Future<void> _startWebRTC() async {
     try {
+      setState(() {
+        _webrtcOn = false;
+        _status = 'Đang xin quyền camera...';
+      });
+
       final media = await navigator.mediaDevices.getUserMedia({
         'video': {
           'facingMode': 'environment',
@@ -89,13 +98,19 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         'audio': false,
       });
 
+      // Gán stream cho renderer + refresh UI
       _localRenderer.srcObject = media;
+      setState(() {
+        _status = 'Đã lấy được camera, đang tạo kết nối WebRTC...';
+      });
 
+      // Tạo peer connection
       _pc = await createPeerConnection({'sdpSemantics': 'unified-plan'});
       for (final track in media.getTracks()) {
         await _pc!.addTrack(track, media);
       }
 
+      // WebSocket signaling với ROS
       _sigChannel = WebSocketChannel.connect(Uri.parse(_signalUrl));
       _sigChannel!.stream.listen((raw) async {
         try {
@@ -116,6 +131,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         } catch (_) {}
       });
 
+      // Gửi offer
       final offer = await _pc!.createOffer({'offerToReceiveVideo': false});
       await _pc!.setLocalDescription(offer);
 
@@ -135,7 +151,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
       if (!mounted) return;
       setState(() {
         _webrtcOn = false;
-        _status = 'WebRTC lỗi: $e';
+        _status = 'WebRTC lỗi (getUserMedia hoặc signaling): $e';
       });
     }
   }
@@ -217,24 +233,34 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                 style: const TextStyle(fontSize: 14, color: Colors.black54),
               ),
               const SizedBox(height: 8),
+              // Khung hiển thị video + ảnh annotated
               Expanded(
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      if (_webrtcOn)
+                      // Video camera local
+                      if (_localRenderer.srcObject != null)
                         RTCVideoView(
                           _localRenderer,
                           objectFit: RTCVideoViewObjectFit
                               .RTCVideoViewObjectFitContain,
                           mirror: false,
                         ),
+
+                      // Overlay ảnh annotated từ ROS
                       if (_annotatedBytes != null)
                         Image.memory(_annotatedBytes!, fit: BoxFit.contain),
-                      if (!_webrtcOn && _annotatedBytes == null)
+
+                      if (_localRenderer.srcObject == null &&
+                          _annotatedBytes == null)
                         const Center(
-                          child: Text('Đang khởi tạo WebRTC...'),
+                          child: Text(
+                            'Đang khởi tạo camera...\n'
+                                'Nếu quá lâu không hiện, kiểm tra lại quyền Camera.',
+                            textAlign: TextAlign.center,
+                          ),
                         ),
                     ],
                   ),
