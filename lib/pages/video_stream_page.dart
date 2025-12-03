@@ -4,12 +4,13 @@ import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:image/image.dart' as imglib;
 
 import '../services/rosbridge_client.dart';
 import 'result_page.dart';
 
 // ====== Cấu hình mạng (giống DetectIntroPage) ======
-const String ROS_IP = '172.20.10.3'; // ⚠️ Đổi IP nếu máy ROS đổi IP
+const String ROS_IP = '172.20.10.3'; // ⚠️ Đổi IP nếu máy ROS đổi
 const int ROSBRIDGE_PORT = 9090;
 
 class VideoStreamPage extends StatefulWidget {
@@ -22,7 +23,7 @@ class VideoStreamPage extends StatefulWidget {
 }
 
 class _VideoStreamPageState extends State<VideoStreamPage> {
-  // ROS bridge
+  // ROS
   late final RosbridgeClient _ros;
   String _status = 'Đang khởi tạo...';
   bool _rosConnected = false;
@@ -31,10 +32,12 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   CameraController? _cameraController;
   bool _cameraReady = false;
 
-  // Gửi frame định kỳ
-  Timer? _frameTimer;
+  // Stream frame liên tục
+  bool _isStreaming = false;
   bool _sendingFrame = false;
-  Duration _frameInterval = const Duration(milliseconds: 800); // ~1.2 fps
+  DateTime? _lastSent;
+  final Duration _minInterval = const Duration(
+      milliseconds: 300); // gửi ~3–4 fps, đủ mượt mà không quá nặng
 
   // Kết quả nhận diện
   Uint8List? _annotatedBytes;
@@ -71,13 +74,11 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
       });
     }
 
-    // 2) Mở camera
-    await _initCamera();
-    // 3) Bắt đầu gửi frame
-    _startFrameTimer();
+    // 2) Khởi tạo camera & stream
+    await _initCameraAndStream();
   }
 
-  Future<void> _initCamera() async {
+  Future<void> _initCameraAndStream() async {
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
@@ -94,10 +95,13 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         orElse: () => cameras.first,
       );
 
+      _cameraController?.dispose();
       _cameraController = CameraController(
         backCamera,
         ResolutionPreset.medium,
         enableAudio: false,
+        imageFormatGroup:
+        ImageFormatGroup.bgra8888, // iOS: BGRA, dễ convert sang JPEG
       );
 
       await _cameraController!.initialize();
@@ -107,6 +111,9 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         _cameraReady = true;
         _status = 'Camera đã sẵn sàng, đang stream & nhận diện...';
       });
+
+      // 3) Bắt đầu stream frame liên tục
+      await _startImageStream();
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -116,42 +123,82 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
     }
   }
 
-  void _startFrameTimer() {
-    _frameTimer?.cancel();
-    if (!_rosConnected || !_cameraReady) return;
-
-    _frameTimer = Timer.periodic(_frameInterval, (_) => _captureAndSendFrame());
-  }
-
-  void _stopFrameTimer() {
-    _frameTimer?.cancel();
-    _frameTimer = null;
-  }
-
-  Future<void> _captureAndSendFrame() async {
-    if (!_rosConnected || !_cameraReady || _sendingFrame) return;
+  Future<void> _startImageStream() async {
     final controller = _cameraController;
     if (controller == null || !controller.value.isInitialized) return;
+    if (_isStreaming) return;
 
-    try {
-      _sendingFrame = true;
-      final XFile file = await controller.takePicture();
-      final bytes = await file.readAsBytes();
+    setState(() {
+      _isStreaming = true;
+      _status = 'Đang stream & nhận diện...';
+    });
 
-      // Gửi JPEG lên ROS
-      _ros.publishJpeg(bytes);
-    } catch (e) {
-      if (mounted) {
-        setState(() => _status = 'Lỗi gửi frame: $e');
+    await controller.startImageStream((CameraImage image) async {
+      if (!_isStreaming || !_rosConnected) return;
+
+      final now = DateTime.now();
+      if (_lastSent != null &&
+          now.difference(_lastSent!) < _minInterval) {
+        return; // throttle
       }
-    } finally {
-      _sendingFrame = false;
+      if (_sendingFrame) return;
+
+      _lastSent = now;
+      _sendingFrame = true;
+      try {
+        final jpeg = _convertCameraImageToJpeg(image);
+        if (jpeg != null) {
+          _ros.publishJpeg(jpeg);
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() => _status = 'Lỗi gửi frame: $e');
+        }
+      } finally {
+        _sendingFrame = false;
+      }
+    });
+  }
+
+  Future<void> _stopImageStream() async {
+    _isStreaming = false;
+    try {
+      if (_cameraController?.value.isStreamingImages == true) {
+        await _cameraController?.stopImageStream();
+      }
+    } catch (_) {}
+    if (mounted) {
+      setState(() {
+        _status = 'Đã dừng stream.';
+      });
     }
+  }
+
+  // Convert CameraImage (BGRA) -> JPEG
+  Uint8List? _convertCameraImageToJpeg(CameraImage image) {
+    // Chỉ xử lý BGRA cho iOS (imageFormatGroup.bgra8888)
+    if (image.format.group != ImageFormatGroup.bgra8888) {
+      // Nếu sau này chạy Android, cần thêm nhánh YUV420.
+      return null;
+    }
+
+    final plane = image.planes[0];
+    final bytes = plane.bytes; // BGRA
+
+    final imglib.Image img = imglib.Image.fromBytes(
+      bytes: bytes.buffer,
+      width: image.width,
+      height: image.height,
+      numChannels: 4,
+      order: imglib.ChannelOrder.bgra,
+    );
+
+    return Uint8List.fromList(imglib.encodeJpg(img, quality: 70));
   }
 
   @override
   void dispose() {
-    _frameTimer?.cancel();
+    _stopImageStream();
     _cameraController?.dispose();
     _ros.disconnect();
     super.dispose();
@@ -203,7 +250,8 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
             children: [
               Text(
                 _status,
-                style: const TextStyle(fontSize: 14, color: Colors.black54),
+                style:
+                const TextStyle(fontSize: 14, color: Colors.black54),
               ),
               const SizedBox(height: 8),
               Expanded(
@@ -212,7 +260,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                   child: Stack(
                     fit: StackFit.expand,
                     children: [
-                      // Preview camera
+                      // Preview video
                       if (_cameraReady && _cameraController != null)
                         CameraPreview(_cameraController!)
                       else
@@ -224,9 +272,12 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                           ),
                         ),
 
-                      // Ảnh annotated từ ROS (nếu có) đè lên
+                      // Ảnh annotated từ ROS đè lên video
                       if (_annotatedBytes != null)
-                        Image.memory(_annotatedBytes!, fit: BoxFit.contain),
+                        Image.memory(
+                          _annotatedBytes!,
+                          fit: BoxFit.contain,
+                        ),
                     ],
                   ),
                 ),
@@ -239,14 +290,8 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                       icon: const Icon(Icons.refresh),
                       label: const Text('Khởi động lại stream'),
                       onPressed: () async {
-                        _stopFrameTimer();
-                        await _cameraController?.dispose();
-                        setState(() {
-                          _cameraReady = false;
-                          _annotatedBytes = null;
-                        });
-                        await _initCamera();
-                        _startFrameTimer();
+                        await _stopImageStream();
+                        await _initCameraAndStream();
                       },
                     ),
                   ),
@@ -255,12 +300,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                     child: OutlinedButton.icon(
                       icon: const Icon(Icons.stop_circle_outlined),
                       label: const Text('Dừng stream'),
-                      onPressed: () {
-                        _stopFrameTimer();
-                        setState(() {
-                          _status = 'Đã dừng stream.';
-                        });
-                      },
+                      onPressed: _isStreaming ? _stopImageStream : null,
                     ),
                   ),
                 ],
