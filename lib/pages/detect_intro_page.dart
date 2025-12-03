@@ -14,7 +14,7 @@ import 'result_page.dart';
 import 'video_stream_page.dart';
 
 // Địa chỉ ROS
-const String ROS_IP = '172.20.10.3';
+const String ROS_IP = '192.168.1.251';
 const int ROSBRIDGE_PORT = 9090;
 
 const Map<String, String> kDiseaseVI = {
