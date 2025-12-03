@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as imglib;
 
@@ -22,21 +23,29 @@ class VideoStreamPage extends StatefulWidget {
 }
 
 class _VideoStreamPageState extends State<VideoStreamPage> {
+  // ROS
   late final RosbridgeClient _ros;
   String _status = 'Đang khởi tạo...';
   bool _rosConnected = false;
 
+  // Camera
   CameraController? _cameraController;
   bool _cameraReady = false;
 
+  // Stream frame liên tục
   bool _isStreaming = false;
   bool _sendingFrame = false;
   DateTime? _lastSent;
   final Duration _minInterval =
   const Duration(milliseconds: 300); // ~3–4 fps
 
-  Uint8List? _annotatedBytes;
-  Map<String, dynamic>? _detections;
+  // Kích thước gốc frame gửi sang ROS (để scale bbox)
+  int? _srcWidth;
+  int? _srcHeight;
+
+  // Dữ liệu nhận lại
+  Uint8List? _annotatedBytes;                 // vẫn giữ để xem ở trang kết quả
+  Map<String, dynamic>? _detections;          // JSON cho bounding box
 
   @override
   void initState() {
@@ -175,6 +184,9 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
     final plane = image.planes[0];
     final bytes = plane.bytes;
 
+    _srcWidth = image.width;
+    _srcHeight = image.height;
+
     final imglib.Image img = imglib.Image.fromBytes(
       bytes: bytes.buffer,
       width: image.width,
@@ -196,7 +208,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
 
   @override
   Widget build(BuildContext context) {
-    final hasFrame = _annotatedBytes != null || _cameraReady;
+    final hasFrame = _cameraReady || _annotatedBytes != null;
 
     return Scaffold(
       appBar: AppBar(
@@ -247,25 +259,41 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
               Expanded(
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      if (_cameraReady && _cameraController != null)
-                        CameraPreview(_cameraController!)
-                      else
-                        const Center(
-                          child: Text(
-                            'Đang khởi tạo camera...\n'
-                                'Nếu quá lâu không hiện, kiểm tra lại quyền Camera.',
-                            textAlign: TextAlign.center,
-                          ),
-                        ),
-                      if (_annotatedBytes != null)
-                        Image.memory(
-                          _annotatedBytes!,
-                          fit: BoxFit.contain,
-                        ),
-                    ],
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final size = Size(
+                        constraints.maxWidth,
+                        constraints.maxHeight,
+                      );
+                      return Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          if (_cameraReady && _cameraController != null)
+                            CameraPreview(_cameraController!)
+                          else
+                            const Center(
+                              child: Text(
+                                'Đang khởi tạo camera...\n'
+                                    'Nếu quá lâu không hiện, kiểm tra lại quyền Camera.',
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                          // ⛔ KHÔNG vẽ annotated image đè lên video nữa
+                          // Chỉ vẽ bounding box dựa trên detections_json
+                          if (_detections != null &&
+                              _srcWidth != null &&
+                              _srcHeight != null)
+                            CustomPaint(
+                              painter: _DetectionPainter(
+                                detections: _detections!,
+                                srcWidth: _srcWidth!.toDouble(),
+                                srcHeight: _srcHeight!.toDouble(),
+                              ),
+                              size: size,
+                            ),
+                        ],
+                      );
+                    },
                   ),
                 ),
               ),
@@ -297,5 +325,100 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         ),
       ),
     );
+  }
+}
+
+/// Vẽ bounding box + nhãn bệnh lên video, dùng dữ liệu từ detections_json
+class _DetectionPainter extends CustomPainter {
+  final Map<String, dynamic> detections;
+  final double srcWidth;
+  final double srcHeight;
+
+  _DetectionPainter({
+    required this.detections,
+    required this.srcWidth,
+    required this.srcHeight,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final dets = detections['detections'];
+    if (dets is! List) return;
+
+    final scaleX = size.width / srcWidth;
+    final scaleY = size.height / srcHeight;
+
+    final boxPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = Colors.redAccent;
+
+    final bgPaint = Paint()
+      ..style = PaintingStyle.fill
+      ..color = Colors.redAccent.withOpacity(0.7);
+
+    for (final raw in dets) {
+      final m = Map<String, dynamic>.from(raw as Map);
+      final bbox =
+      (m['bbox'] as List?)?.map((e) => (e as num).toDouble()).toList();
+      if (bbox == null || bbox.length != 4) continue;
+
+      final cls = (m['cls'] ?? '').toString();
+      final score =
+      (m['score'] is num) ? (m['score'] as num).toDouble() : 0.0;
+
+      // bbox: [x1, y1, x2, y2] theo toạ độ gốc
+      final x1 = bbox[0] * scaleX;
+      final y1 = bbox[1] * scaleY;
+      final x2 = bbox[2] * scaleX;
+      final y2 = bbox[3] * scaleY;
+
+      final rect = Rect.fromLTRB(x1, y1, x2, y2);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect, const Radius.circular(4)),
+        boxPaint,
+      );
+
+      final label =
+          '${cls.isEmpty ? 'Object' : cls} ${(score * 100).toStringAsFixed(1)}%';
+
+      // Vẽ label: nền đỏ + chữ trắng
+      final textSpan = TextSpan(
+        text: label,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
+      );
+      final tp = TextPainter(
+        text: textSpan,
+        textDirection: TextDirection.ltr,
+        maxLines: 1,
+      )..layout();
+
+      final labelRect = Rect.fromLTWH(
+        x1,
+        y1 - tp.height - 4 < 0 ? y1 + 2 : y1 - tp.height - 4,
+        tp.width + 8,
+        tp.height + 4,
+      );
+
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(labelRect, const Radius.circular(3)),
+        bgPaint,
+      );
+      tp.paint(
+        canvas,
+        Offset(labelRect.left + 4, labelRect.top + 2),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DetectionPainter oldDelegate) {
+    return !mapEquals(oldDelegate.detections, detections) ||
+        oldDelegate.srcWidth != srcWidth ||
+        oldDelegate.srcHeight != srcHeight;
   }
 }
