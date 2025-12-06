@@ -15,84 +15,78 @@ const Map<String, String> kDiseaseVI = {
   'Healthy': 'Lá khoẻ mạnh',
 };
 
-/// Hướng dẫn điều trị & phòng ngừa
-/// Mỗi bệnh có 2 nhóm:
-///   quick   - xử lý nhanh khi đã phát hiện bệnh
-///   prevent - phòng ngừa lâu dài
+/// Hướng dẫn điều trị & phòng ngừa theo tài liệu bạn gửi
 const Map<String, Map<String, List<String>>> kGuide = {
-  'Cercospora': {
-    'quick': [
-      'Tỉa bỏ các lá, cành bị bệnh nặng, thu gom và tiêu hủy để tránh lây lan.',
-      'Không để lá bệnh rụng lại trên vườn, hạn chế nước tưới văng làm phát tán bào tử.',
-      'Khi bệnh nặng có thể phun thuốc gốc đồng hoặc các thuốc đặc trị theo khuyến cáo của cán bộ kỹ thuật.',
-    ],
-    'prevent': [
-      'Trồng với mật độ hợp lý, tỉa cành tạo tán thông thoáng giúp vườn ít ẩm, hạn chế nấm bệnh.',
-      'Bón phân cân đối N-P-K, tăng cường phân hữu cơ và kali để lá dày, khỏe, ít nhiễm bệnh.',
-      'Thường xuyên kiểm tra vườn, phát hiện sớm các vết bệnh nhỏ để xử lý kịp thời.',
-    ],
-  },
   'Miner': {
     'quick': [
-      'Cắt bỏ và tiêu hủy các lá, cành bị sâu đục nặng để triệt nguồn sâu.',
-      'Khi phát hiện đường đục mới, có thể dùng tay vò nát lá hoặc cắt bỏ phần lá đó.',
-      'Có thể sử dụng thuốc trừ sâu theo khuyến cáo địa phương khi mật số cao.',
+      'Khi phát hiện sâu, cắt bỏ cành/thân bị đục và tiêu hủy ngay (cắt xa vị trí đục ≥ 8 cm).',
+      'Không cắt được thì dùng dây thép luồn vào lỗ đục để diệt sâu.',
+      'Phun thuốc có hoạt chất Diazinon hoặc Chlorpyrifos Ethyl + Cypermethrin theo khuyến cáo.',
+      'Phun vào sáng sớm/chiều mát, tập trung vào thân; ưu tiên thuốc độc tính thấp.',
+      'Dùng bẫy đèn bắt sâu trưởng thành vào đầu mùa mưa.',
     ],
-    'prevent': [
-      'Giữ vườn thông thoáng, hạn chế cỏ dại là nơi trú ẩn của sâu.',
-      'Bón phân cân đối, không bón thừa đạm làm lá non ra quá nhiều, dễ thu hút sâu.',
-      'Theo dõi thường xuyên vào giai đoạn cây ra đọt non để phát hiện sớm sâu non.',
-    ],
-  },
-  'Phoma': {
-    'quick': [
-      'Cắt tỉa và tiêu hủy lá, cành bị bệnh, nhất là những lá có nhiều đốm cháy lớn.',
-      'Giảm tưới, tránh để vườn ẩm ướt kéo dài vì tạo điều kiện cho nấm phát triển.',
-      'Trong trường hợp bệnh nặng có thể phun thuốc trừ nấm theo đúng liều lượng khuyến cáo.',
-    ],
-    'prevent': [
-      'Quản lý tốt tàn dư thực vật, không để cành lá bệnh tồn tại trong vườn.',
-      'Bón phân hữu cơ hoai mục kết hợp nấm đối kháng để cải tạo đất và hạn chế nấm gây bệnh.',
-      'Tạo tán thông thoáng, hạn chế trồng quá dày, thường xuyên vệ sinh vườn.',
+    'long': [
+      'Thăm vườn thường xuyên để phát hiện sớm; cắt bỏ và tiêu hủy cành bệnh.',
+      'Vệ sinh vườn, dọn cỏ, đốt bỏ tàn dư thực vật.',
+      'Mật độ trồng hợp lý, tỉa cành tạo tán cho thông thoáng.',
+      'Bón phân cân đối; tránh lạm dụng đạm; tăng sức đề kháng cho cây.',
+      'Bảo vệ thiên địch (ong ký sinh, bọ rùa…).',
+      'Dùng chế phẩm sinh học: nấm xanh (Metarhizium), nấm trắng (Beauveria).',
+      'Phun phòng định kỳ bằng thuốc thấm sâu/lưu dẫn mạnh.',
+      'Có thể bơm thuốc trực tiếp vào lỗ đục bằng xilanh để tăng hiệu quả.',
     ],
   },
+
   'Rust': {
     'quick': [
-      'Loại bỏ lá bị bệnh nặng, thu gom và tiêu hủy đúng cách.',
-      'Hạn chế tưới phun mưa vào thời điểm chiều tối, tránh làm ẩm kéo dài trên mặt lá.',
-      'Khi bệnh phát triển mạnh có thể sử dụng thuốc đặc trị bệnh rỉ sắt theo hướng dẫn.',
+      'Kiểm tra vườn thường xuyên để phát hiện sớm.',
+      'Phun sớm khi mới chớm: Propiconazole, Difenoconazole, Hexaconazole hoặc Copper Oxychloride.',
+      'Phun phòng 10–15 ngày/lần đầu mùa mưa để chặn lây lan.',
+      'Thu gom, tiêu hủy lá bệnh; cây nặng thì xử lý riêng, tránh phát tán bào tử.',
+      'Luân phiên hoạt chất để tránh kháng thuốc.',
     ],
-    'prevent': [
-      'Chọn giống có khả năng chống chịu bệnh rỉ sắt tốt nếu có điều kiện.',
-      'Chăm sóc cân đối dinh dưỡng, tránh bón quá nhiều đạm làm lá non mỏng, dễ nhiễm bệnh.',
-      'Theo dõi vườn thường xuyên vào đầu và giữa mùa mưa để phát hiện sớm vết bệnh rỉ.',
+    'long': [
+      'Thu gom, đốt/chôn sâu lá bệnh rụng dưới gốc.',
+      'Dọn sạch cỏ dại, tàn dư thực vật.',
+      'Trồng mật độ hợp lý, không quá dày; tỉa cành tăm, cành vô hiệu.',
+      'Cải thiện thoát nước, giữ vườn khô ráo mùa mưa.',
+      'Bón cân đối, tăng Kali; hạn chế bón thừa đạm.',
+      'Bổ sung hữu cơ để cải tạo đất và tăng đề kháng.',
     ],
   },
-  'Healthy': {
+
+  'Phoma': {
     'quick': [
-      'Không phát hiện dấu hiệu bệnh rõ ràng trên lá cà phê ở thời điểm hiện tại.',
-      'Tiếp tục theo dõi cây để kịp thời phát hiện nếu xuất hiện triệu chứng bất thường.',
+      'Cắt bỏ lá/cành bệnh nặng để ngăn lây lan và tiêu hủy ngay.',
+      'Phun Mancozeb, Copper Oxychloride, Validamycin hoặc Metalaxyl đúng liều.',
+      'Dùng chế phẩm sinh học Trichoderma để khống chế nấm trong đất.',
+      'Có thể rải vôi bột khử khuẩn đất tại vùng ổ dịch.',
     ],
-    'prevent': [
-      'Duy trì chăm sóc vườn theo quy trình, bón phân cân đối và tỉa cành hợp lý.',
-      'Chủ động vệ sinh vườn, quản lý cỏ dại, thoát nước tốt để hạn chế mầm bệnh phát sinh.',
+    'long': [
+      'Tỉa cành tạo tán thông thoáng, giảm ẩm vườn.',
+      'Vệ sinh vườn, thu gom và tiêu hủy tàn dư, cỏ dại.',
+      'Khoảng cách trồng hợp lý để lưu thông ánh sáng/không khí.',
+      'Bón cân đối, ưu tiên Kali/Canxi/Silic để tăng đề kháng; tránh thừa đạm.',
+      'Tưới tiêu hợp lý, tránh úng hoặc khô hạn kéo dài.',
+    ],
+  },
+
+  'Cercospora': {
+    'quick': [
+      'Tỉa bỏ lá, cành, quả bệnh và tiêu hủy xa khu trồng.',
+      'Phun Hexaconazole, Copper Hydroxide… theo hướng dẫn; luân phiên hoạt chất.',
+      'Có thể dùng Trichoderma/Chaetomium (sinh học) để hỗ trợ.',
+      'Sau xử lý, chăm sóc phục hồi: bón cân đối, tưới hợp lý.',
+    ],
+    'long': [
+      'Tỉa cành già/yếu/chen chúc để tăng thông thoáng.',
+      'Thu gom, tiêu hủy lá rụng/tàn dư – cắt nguồn nấm bệnh.',
+      'Không trồng quá dày, cải thiện thông khí và ánh sáng.',
+      'Đảm bảo thoát nước tốt, tránh úng mùa mưa.',
+      'Bón cân đối, ưu tiên Kali/Canxi; hạn chế thừa đạm trong mùa mưa.',
     ],
   },
 };
-
-/// Chuẩn hoá tên lớp bệnh từ ROS về key chuẩn để tra map
-String normalizeDiseaseKey(String raw) {
-  final s = raw.trim();
-  final lower = s.toLowerCase();
-
-  if (lower.contains('cercospora')) return 'Cercospora';
-  if (lower.contains('miner')) return 'Miner';
-  if (lower.contains('phoma')) return 'Phoma';
-  if (lower.contains('rust')) return 'Rust';
-  if (lower.contains('healthy') || lower.contains('normal')) return 'Healthy';
-
-  return s;
-}
 
 class ResultPage extends StatefulWidget {
   static const routeName = '/result';
@@ -108,50 +102,34 @@ class _ResultPageState extends State<ResultPage> {
   String? _rawPath;
   Uint8List? _annotated;
   Map<String, dynamic>? _detections;
+
+  // Tính toán
+  late final DateTime _ts = DateTime.now();
   double? _latencyMs;
 
-  bool _initialized = false;
-  bool _savedHistory = false;
-
-  final NumberFormat _scoreFormat = NumberFormat('0.0');
+  // Chỉ lưu lịch sử 1 lần
+  bool _saved = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (_initialized) return;
+    final args = ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?;
 
-    final args = ModalRoute.of(context)?.settings.arguments;
+    _rawPath   = args?['rawPath'] as String?;
+    _annotated = args?['annotated'] as Uint8List?;
+    _detections = args?['detections'] as Map<String, dynamic>?;
 
-    if (args is String) {
-      // Trường hợp từ CameraPage: chỉ có đường dẫn ảnh
-      _rawPath = args;
-    } else if (args is Map) {
-      // Trường hợp từ VideoStreamPage: nhận annotated + detections
-      final map = Map<String, dynamic>.from(args as Map);
-      _rawPath = map['rawPath'] as String?;
-      _annotated = map['annotated'] as Uint8List?;
-      final det = map['detections'];
-      if (det is Map<String, dynamic>) {
-        _detections = det;
-      } else if (det is Map) {
-        _detections = Map<String, dynamic>.from(det);
-      }
-      final lat = map['latencyMs'];
-      if (lat is num) {
-        _latencyMs = lat.toDouble();
-      }
+    if (_detections != null && _detections!['latency_ms'] is num) {
+      _latencyMs = (_detections!['latency_ms'] as num).toDouble();
     }
 
-    _initialized = true;
-
-    // Lưu lịch sử (nếu có detection)
-    if (_detections != null && !_savedHistory) {
-      _savedHistory = true;
+    if (!_saved) {
       _saveHistoryBest();
+      _saved = true;
     }
   }
 
-  /// Lấy mỗi bệnh 1 kết quả tốt nhất (score cao nhất)
+  /// Lấy mỗi bệnh 1 kết quả tốt nhất (điểm cao nhất)
   List<_OneDetection> _bestPerDisease() {
     final list = <_OneDetection>[];
     if (_detections == null) return list;
@@ -160,18 +138,11 @@ class _ResultPageState extends State<ResultPage> {
     if (dets is! List) return list;
 
     final byClass = <String, _OneDetection>{};
-
     for (final raw in dets) {
       final m = Map<String, dynamic>.from(raw as Map);
-
-      final rawCls = (m['cls'] ?? '').toString();
-      final cls = normalizeDiseaseKey(rawCls);
-
-      final score =
-      (m['score'] is num) ? (m['score'] as num).toDouble() : 0.0;
-      final bbox = (m['bbox'] as List?)
-          ?.map((e) => (e as num).toDouble())
-          .toList();
+      final cls = (m['cls'] ?? '').toString();
+      final score = (m['score'] is num) ? (m['score'] as num).toDouble() : 0.0;
+      final bbox = (m['bbox'] as List?)?.map((e) => (e as num).toDouble()).toList();
 
       if (cls.isEmpty) continue;
 
@@ -180,225 +151,202 @@ class _ResultPageState extends State<ResultPage> {
         byClass[cls] = _OneDetection(cls: cls, score: score, bbox: bbox);
       }
     }
-
     list.addAll(byClass.values);
+    // Sắp xếp giảm dần theo score
     list.sort((a, b) => b.score.compareTo(a.score));
     return list;
   }
 
+  /// Lưu bản ghi mạnh nhất vào lịch sử
   Future<void> _saveHistoryBest() async {
     final best = _bestPerDisease();
     if (best.isEmpty) return;
 
     final top = best.first;
-    final canonical = normalizeDiseaseKey(top.cls);
+    final vi = kDiseaseVI[top.cls] ?? top.cls;
+    final imgPath = _rawPath; // lưu path ảnh gốc (nếu có)
 
-    final now = DateTime.now();
-    final fmt = DateFormat('dd/MM/yyyy HH:mm:ss');
-
-    final record = <String, dynamic>{
-      'time': fmt.format(now),
-      'cls': canonical,
-      'score': '${_scoreFormat.format(top.score * 100)}%',
-      'latency': _latencyMs?.round() ?? 0,
-      'path': _rawPath ?? '',
-    };
-
-    try {
-      await DetectionHistoryStorage.addRecord(record);
-    } catch (_) {
-      // Bỏ qua lỗi lưu lịch sử để không làm văng app
-    }
+    await DetectionHistoryStorage.addRecord({
+      'time'   : DateFormat('dd/MM/yyyy HH:mm:ss').format(_ts),
+      'cls'    : vi,
+      'score'  : top.score.toStringAsFixed(2),
+      'latency': _latencyMs?.toStringAsFixed(2) ?? '-',
+      'path'   : imgPath,
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final best = _bestPerDisease();
+    final hasAnyImage = _annotated != null || (_rawPath != null && File(_rawPath!).existsSync());
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Kết quả chẩn đoán'),
+        backgroundColor: const Color(0xFFE8F0E8),
+        title: const Text('Kết quả nhận diện'),
       ),
+      backgroundColor: const Color(0xFFF4F8F5),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _buildImagePreview(),
-              const SizedBox(height: 16),
-              if (best.isEmpty)
-                const Text(
-                  'Không có đối tượng nào được phát hiện hoặc chưa có dữ liệu từ mô hình.',
-                  style: TextStyle(fontSize: 14),
-                )
-              else ...[
-                const Text(
-                  'Tổng quan',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+          children: [
+            // Ảnh hiển thị
+            if (hasAnyImage)
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: AspectRatio(
+                  aspectRatio: 3 / 4,
+                  child: Container(
+                    color: Colors.white,
+                    child: _annotated != null
+                        ? Image.memory(_annotated!, fit: BoxFit.contain)
+                        : Image.file(File(_rawPath!), fit: BoxFit.contain),
                   ),
                 ),
-                const SizedBox(height: 8),
-                const Text(
-                  'Hệ thống đã chọn ra đối tượng có độ tin cậy cao nhất cho mỗi loại bệnh. '
-                      'Bấm vào từng mục để xem hướng dẫn xử lý nhanh và phòng ngừa lâu dài.',
-                  style: TextStyle(fontSize: 13),
-                ),
-                const SizedBox(height: 16),
-                ...best.map((d) => _DiseaseCard(detection: d)),
-              ],
-            ],
-          ),
+              ),
+
+            const SizedBox(height: 16),
+
+            // Thông tin thời gian & latency
+            _InfoChips(
+              time: DateFormat('dd/MM/yyyy HH:mm:ss').format(_ts),
+              latency: _latencyMs != null ? '${_latencyMs!.toStringAsFixed(2)} ms' : '—',
+            ),
+
+            const SizedBox(height: 16),
+
+            const _SectionTitle('Bệnh phát hiện'),
+
+            if (best.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 24),
+                child: Center(child: Text('Không có đối tượng nào được phát hiện.')),
+              ),
+
+            // Mỗi bệnh 1 card có thể thu gọn / mở ra
+            for (final d in best) _DiseaseCard(detection: d),
+          ],
         ),
       ),
     );
   }
+}
 
-  Widget _buildImagePreview() {
-    Widget child;
-    if (_annotated != null) {
-      child = Image.memory(
-        _annotated!,
-        fit: BoxFit.contain,
-      );
-    } else if (_rawPath != null && _rawPath!.isNotEmpty) {
-      final file = File(_rawPath!);
-      if (file.existsSync()) {
-        child = Image.file(
-          file,
-          fit: BoxFit.contain,
-        );
-      } else {
-        child = const Center(
-          child: Text('Không tìm thấy file ảnh gốc.'),
-        );
-      }
-    } else {
-      child = const Center(
-        child: Text('Chưa có ảnh để hiển thị.'),
-      );
-    }
+/* --------------------------------------------------------------- */
+/*  Widgets nhỏ                                                     */
+/* --------------------------------------------------------------- */
 
+class _InfoChips extends StatelessWidget {
+  final String time;
+  final String latency;
+  const _InfoChips({required this.time, required this.latency});
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 8, runSpacing: 8,
+      children: [
+        Chip(
+          avatar: const Icon(Icons.schedule, size: 18),
+          label: Text('Thời gian: $time'),
+        ),
+        Chip(
+          avatar: const Icon(Icons.timelapse, size: 18),
+          label: Text('Xử lý: $latency'),
+        ),
+      ],
+    );
+  }
+}
+
+class _SectionTitle extends StatelessWidget {
+  final String text;
+  const _SectionTitle(this.text);
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
-      constraints: const BoxConstraints(maxHeight: 280),
+      padding: const EdgeInsets.symmetric(vertical: 8),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(12),
-        color: Colors.grey.shade200,
+        color: const Color(0xFFEFF6EE),
+        borderRadius: BorderRadius.circular(8),
       ),
-      clipBehavior: Clip.antiAlias,
-      child: child,
+      child: Text(
+        text,
+        style: const TextStyle(
+            fontSize: 18, fontWeight: FontWeight.w800, color: Colors.black87),
+      ),
     );
   }
 }
 
 class _DiseaseCard extends StatelessWidget {
   final _OneDetection detection;
-
   const _DiseaseCard({required this.detection});
 
-  String _leadingLetter(String cls) =>
-      (cls.isNotEmpty) ? cls[0].toUpperCase() : '?';
+  String _leadingLetter(String cls) => (cls.isNotEmpty) ? cls[0].toUpperCase() : '?';
 
   @override
   Widget build(BuildContext context) {
-    final canonical = normalizeDiseaseKey(detection.cls);
-    final vi = kDiseaseVI[canonical] ?? canonical;
-    final tips = kGuide[canonical];
+    final cls = detection.cls;
+    final vi = kDiseaseVI[cls] ?? cls;
+    final tips = kGuide[cls];
 
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 8),
-      elevation: 2,
-      child: ExpansionTile(
-        leading: CircleAvatar(
-          child: Text(_leadingLetter(canonical)),
-        ),
-        title: Text(
-          vi,
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        subtitle: Text(
-          'Độ tin cậy: ${(detection.score * 100).toStringAsFixed(1)}%',
-          style: const TextStyle(fontSize: 13),
-        ),
-        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-        children: [
-          if (tips == null)
-            const Text(
-              'Chưa có hướng dẫn chi tiết cho bệnh này.',
-              style: TextStyle(fontSize: 13),
-            )
-          else ...[
-            if (tips['quick'] != null && tips['quick']!.isNotEmpty)
-              _TipSection(
-                icon: Icons.medical_services,
-                title: 'Xử lý nhanh trên vườn',
-                items: tips['quick']!,
-              ),
-            const SizedBox(height: 8),
-            if (tips['prevent'] != null && tips['prevent']!.isNotEmpty)
-              _TipSection(
-                icon: Icons.shield,
-                title: 'Phòng ngừa lâu dài',
-                items: tips['prevent']!,
-              ),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Theme( // làm ExpansionTile ít trống hơn
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          leading: CircleAvatar(
+            backgroundColor: Colors.green.shade50,
+            foregroundColor: Colors.green.shade800,
+            child: Text(_leadingLetter(cls)),
+          ),
+          title: Text(
+            vi,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+          ),
+          subtitle: Text('Độ tin cậy: ${(detection.score * 100).toStringAsFixed(2)}%'),
+          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          children: [
+            const Divider(),
+            if (tips == null)
+              const Text('Chưa có hướng dẫn cho bệnh này.'),
+            if (tips != null) ...[
+              const Text('Xử lý nhanh', style: TextStyle(
+                  fontSize: 16, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 6),
+              for (final line in tips['quick']!) _Bullet(line),
+              const SizedBox(height: 12),
+              const Text('Phòng ngừa lâu dài', style: TextStyle(
+                  fontSize: 16, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 6),
+              for (final line in tips['long']!) _Bullet(line),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
 }
 
-class _TipSection extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final List<String> items;
-
-  const _TipSection({
-    required this.icon,
-    required this.title,
-    required this.items,
-  });
+class _Bullet extends StatelessWidget {
+  final String text;
+  const _Bullet(this.text);
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Icon(icon, size: 16),
-            const SizedBox(width: 6),
-            Text(
-              title,
-              style: const TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        ...items.map(
-              (e) => Padding(
-            padding: const EdgeInsets.only(bottom: 2),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('• ',
-                    style: TextStyle(fontSize: 13, height: 1.4)),
-                Expanded(
-                  child: Text(
-                    e,
-                    style: const TextStyle(fontSize: 13, height: 1.4),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ],
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('•  '),
+          Expanded(child: Text(text)),
+        ],
+      ),
     );
   }
 }
@@ -408,10 +356,5 @@ class _OneDetection {
   final String cls;
   final double score;
   final List<double>? bbox;
-
-  const _OneDetection({
-    required this.cls,
-    required this.score,
-    this.bbox,
-  });
+  const _OneDetection({required this.cls, required this.score, this.bbox});
 }
