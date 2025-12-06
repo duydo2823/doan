@@ -1,10 +1,49 @@
 import 'dart:typed_data';
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:image/image.dart' as imglib;
 
 import '../services/rosbridge_client.dart';
 
+// IP rosbridge (sửa lại nếu khác)
+const String ROS_IP = '172.20.10.3';
+const int ROSBRIDGE_PORT = 9090;
+
+/// Chuẩn hoá tên lớp bệnh (để hiện lên label cho đẹp, không bắt buộc)
+String normalizeDiseaseKey(String raw) {
+  final s = raw.trim();
+  final lower = s.toLowerCase();
+
+  if (lower.contains('cercospora')) return 'Cercospora';
+  if (lower.contains('miner')) return 'Miner';
+  if (lower.contains('phoma')) return 'Phoma';
+  if (lower.contains('rust')) return 'Rust';
+  if (lower.contains('healthy') || lower.contains('normal')) return 'Healthy';
+
+  return s;
+}
+
+Map<String, dynamic> normalizeDetectionsJson(Map<String, dynamic> src) {
+  final map = Map<String, dynamic>.from(src);
+  final dets = map['detections'];
+
+  if (dets is List) {
+    map['detections'] = dets.map((e) {
+      if (e is Map) {
+        final mm = Map<String, dynamic>.from(e);
+        final rawCls = (mm['cls'] ?? '').toString();
+        mm['cls'] = normalizeDiseaseKey(rawCls);
+        return mm;
+      }
+      return e;
+    }).toList();
+  }
+
+  return map;
+}
+
 class VideoStreamPage extends StatefulWidget {
-  static const routeName = "/video-stream";
+  static const routeName = '/video-stream';
 
   const VideoStreamPage({super.key});
 
@@ -13,82 +52,211 @@ class VideoStreamPage extends StatefulWidget {
 }
 
 class _VideoStreamPageState extends State<VideoStreamPage> {
-  late RosbridgeClient _ros;
+  late final RosbridgeClient _ros;
 
-  Uint8List? _frame;                         // video frame từ ROS
-  Map<String, dynamic>? _detections;         // json bbox từ ROS
-  String _status = "Disconnected";
+  String _status = 'Đang kết nối ROS...';
+
+  CameraController? _cameraController;
+  bool _cameraReady = false;
+
+  // Throttle gửi frame
+  bool _sendingFrame = false;
+  DateTime? _lastSent;
+  final Duration _minInterval = const Duration(milliseconds: 300);
+
+  // Detections & kích thước ảnh nguồn
+  Map<String, dynamic>? _detections;
+  int? _srcWidth;
+  int? _srcHeight;
 
   @override
   void initState() {
     super.initState();
 
+    // ROS client: dùng onDetections để overlay bbox
     _ros = RosbridgeClient(
-      url: "ws://192.168.1.251:9090",
+      url: 'ws://$ROS_IP:$ROSBRIDGE_PORT',
       onStatus: (s) => setState(() => _status = s),
-
-      onAnnotatedFrame: (jpeg) {
-        setState(() => _frame = jpeg);
-      },
-
-      onDetections: (j) {
-        setState(() => _detections = j);
-      },
+      onAnnotatedImage: (_) {}, // không dùng annotated trong trang này
+      onDetections: (m) =>
+          setState(() => _detections = normalizeDetectionsJson(m)),
+      onAnnotatedFrame: null,
     );
 
-    _ros.connect();
+    _initAll();
+  }
+
+  Future<void> _initAll() async {
+    await _ros.connect();
+    await _initCameraAndStream();
+  }
+
+  Future<void> _initCameraAndStream() async {
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        setState(() {
+          _cameraReady = false;
+          _status = 'Không tìm thấy camera.';
+        });
+        return;
+      }
+
+      final camera = cameras.first;
+      _cameraController = CameraController(
+        camera,
+        ResolutionPreset.medium,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.bgra8888,
+      );
+
+      await _cameraController!.initialize();
+      if (!mounted) return;
+
+      setState(() {
+        _cameraReady = true;
+        _status = 'Camera OK • Đang stream & gửi lên ROS...';
+      });
+
+      await _startImageStream();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _cameraReady = false;
+        _status = 'Lỗi khởi tạo camera: $e';
+      });
+    }
+  }
+
+  Future<void> _startImageStream() async {
+    if (_cameraController == null) return;
+
+    _lastSent = DateTime.now();
+    _cameraController!.startImageStream((image) async {
+      _srcWidth = image.width;
+      _srcHeight = image.height;
+
+      final now = DateTime.now();
+      if (_lastSent != null && now.difference(_lastSent!) < _minInterval) {
+        return;
+      }
+      if (_sendingFrame) return;
+
+      _lastSent = now;
+      _sendingFrame = true;
+      try {
+        final jpeg = _convertCameraImageToJpeg(image);
+        if (jpeg != null) {
+          _ros.publishJpeg(jpeg);
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() => _status = 'Lỗi gửi frame: $e');
+        }
+      } finally {
+        _sendingFrame = false;
+      }
+    });
+  }
+
+  Uint8List? _convertCameraImageToJpeg(CameraImage image) {
+    try {
+      final width = image.width;
+      final height = image.height;
+      final bgra = image.planes[0].bytes;
+
+      final img = imglib.Image.fromBytes(
+        width: width,
+        height: height,
+        bytes: bgra.buffer,
+        order: imglib.ChannelOrder.bgra,
+      );
+
+      final jpg = imglib.encodeJpg(img, quality: 85);
+      return Uint8List.fromList(jpg);
+    } catch (e) {
+      return null;
+    }
   }
 
   @override
   void dispose() {
+    try {
+      _cameraController?.stopImageStream();
+    } catch (_) {}
+    _cameraController?.dispose();
     _ros.disconnect();
     super.dispose();
   }
 
-  Widget _buildVideo() {
-    if (_frame == null) {
-      return const Center(
-        child: Text("Đang chờ video từ ROS...", style: TextStyle(color: Colors.white)),
-      );
-    }
-
-    return Image.memory(
-      _frame!,
-      gaplessPlayback: true,
-      fit: BoxFit.cover,
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
+    final bool connected = _ros.isConnected;
+
     return Scaffold(
-      appBar: AppBar(title: const Text("ROS Video Stream")),
+      appBar: AppBar(
+        title: const Text('ROS Video Stream'),
+      ),
       body: SafeArea(
-        child: Stack(
-          fit: StackFit.expand,
+        child: Column(
           children: [
-            // VIDEO TỪ ROS
-            _buildVideo(),
-
-            // OVERLAY BBOX
-            if (_detections != null)
-              CustomPaint(
-                painter: BboxPainter(json: _detections!),
+            // Status bar trên đầu
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Row(
+                children: [
+                  Container(
+                    padding:
+                    const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      connected ? _status : 'Disconnected',
+                      style:
+                      const TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                  ),
+                ],
               ),
-
-            // STATUS
-            Positioned(
-              top: 12,
-              left: 12,
-              child: Container(
-                padding: const EdgeInsets.all(6),
-                color: Colors.black54,
-                child: Text(
-                  _status,
-                  style: const TextStyle(color: Colors.white, fontSize: 12),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  color: Colors.black,
+                  child: _cameraReady
+                      ? LayoutBuilder(
+                    builder: (context, constraints) {
+                      return Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          CameraPreview(_cameraController!),
+                          if (_detections != null &&
+                              _srcWidth != null &&
+                              _srcHeight != null)
+                            CustomPaint(
+                              painter: _LiveDetectionPainter(
+                                detections: _detections!,
+                                srcWidth: _srcWidth!,
+                                srcHeight: _srcHeight!,
+                              ),
+                            ),
+                        ],
+                      );
+                    },
+                  )
+                      : const Center(
+                    child: Text(
+                      'Đang mở camera...',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                  ),
                 ),
               ),
-            )
+            ),
           ],
         ),
       ),
@@ -96,21 +264,35 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   }
 }
 
-/// PAINTER VẼ BOUNDING BOX
-class BboxPainter extends CustomPainter {
-  final Map<String, dynamic> json;
+/// Painter vẽ bbox lên preview
+class _LiveDetectionPainter extends CustomPainter {
+  final Map<String, dynamic> detections;
+  final int srcWidth;
+  final int srcHeight;
 
-  BboxPainter({required this.json});
+  _LiveDetectionPainter({
+    required this.detections,
+    required this.srcWidth,
+    required this.srcHeight,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (!json.containsKey("detections")) return;
+    final dets = detections['detections'];
+    if (dets is! List) return;
 
-    final list = json["detections"];
-    if (list is! List) return;
-
-    final imgW = json["image"]["width"] * 1.0;
-    final imgH = json["image"]["height"] * 1.0;
+    // Nếu JSON có image.width/height thì dùng; không thì dùng srcWidth/srcHeight
+    double imgW = srcWidth.toDouble();
+    double imgH = srcHeight.toDouble();
+    final imgInfo = detections['image'];
+    if (imgInfo is Map) {
+      final w = imgInfo['width'];
+      final h = imgInfo['height'];
+      if (w is num && h is num) {
+        imgW = w.toDouble();
+        imgH = h.toDouble();
+      }
+    }
 
     final scaleX = size.width / imgW;
     final scaleY = size.height / imgH;
@@ -120,12 +302,19 @@ class BboxPainter extends CustomPainter {
       ..strokeWidth = 2
       ..style = PaintingStyle.stroke;
 
-    final bgPaint = Paint()..color = const Color(0x88000000);
+    final bgPaint = Paint()
+      ..color = const Color(0x88000000)
+      ..style = PaintingStyle.fill;
 
-    for (final raw in list) {
-      final box = List<double>.from(raw["bbox"]);
-      final cls = raw["cls"];
-      final score = raw["score"];
+    for (final raw in dets) {
+      if (raw is! Map) continue;
+      final box =
+      (raw['bbox'] as List?)?.map((e) => (e as num).toDouble()).toList();
+      if (box == null || box.length != 4) continue;
+
+      final cls = (raw['cls'] ?? '').toString();
+      final score =
+      (raw['score'] is num) ? (raw['score'] as num).toDouble() : 0.0;
 
       final x1 = box[0] * scaleX;
       final y1 = box[1] * scaleY;
@@ -134,7 +323,7 @@ class BboxPainter extends CustomPainter {
 
       canvas.drawRect(Rect.fromLTRB(x1, y1, x2, y2), rectPaint);
 
-      final text = "$cls ${(score * 100).toStringAsFixed(1)}%";
+      final text = '$cls ${(score * 100).toStringAsFixed(1)}%';
 
       final tp = TextPainter(
         text: TextSpan(
@@ -147,15 +336,22 @@ class BboxPainter extends CustomPainter {
         textDirection: TextDirection.ltr,
       )..layout();
 
-      final bg = Rect.fromLTWH(x1, y1 - tp.height - 4, tp.width + 4, tp.height + 2);
+      final bg = Rect.fromLTWH(
+        x1,
+        y1 - tp.height - 4,
+        tp.width + 6,
+        tp.height + 4,
+      );
 
       canvas.drawRect(bg, bgPaint);
-      tp.paint(canvas, Offset(bg.left + 2, bg.top + 1));
+      tp.paint(canvas, Offset(bg.left + 3, bg.top + 2));
     }
   }
 
   @override
-  bool shouldRepaint(covariant BboxPainter oldDelegate) {
-    return true;
+  bool shouldRepaint(covariant _LiveDetectionPainter oldDelegate) {
+    return oldDelegate.detections != detections ||
+        oldDelegate.srcWidth != srcWidth ||
+        oldDelegate.srcHeight != srcHeight;
   }
 }
