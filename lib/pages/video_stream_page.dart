@@ -10,7 +10,7 @@ import '../services/rosbridge_client.dart';
 import 'result_page.dart';
 
 // Địa chỉ ROS
-const String ROS_IP = '192.168.1.251';
+const String ROS_IP = '172.20.10.3';
 const int ROSBRIDGE_PORT = 9090;
 
 class VideoStreamPage extends StatefulWidget {
