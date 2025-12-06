@@ -13,6 +13,21 @@ import 'result_page.dart';
 const String ROS_IP = '172.20.10.3';
 const int ROSBRIDGE_PORT = 9090;
 
+/// Chuẩn hoá tên lớp bệnh từ ROS về key chuẩn để app dùng thống nhất
+String normalizeDiseaseKey(String raw) {
+  final s = raw.trim();
+  final lower = s.toLowerCase();
+
+  if (lower.contains('cercospora')) return 'Cercospora';
+  if (lower.contains('miner')) return 'Miner';
+  if (lower.contains('phoma')) return 'Phoma';
+  if (lower.contains('rust')) return 'Rust';
+  if (lower.contains('healthy') || lower.contains('normal')) return 'Healthy';
+
+  // Không match gì thì giữ nguyên (đã trim)
+  return s;
+}
+
 class VideoStreamPage extends StatefulWidget {
   static const routeName = '/video-stream';
 
@@ -47,6 +62,26 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   Uint8List? _annotatedBytes;           // ảnh ROS vẽ bbox sẵn
   Map<String, dynamic>? _detections;    // JSON bbox (nếu có)
 
+  /// Chuẩn hoá trường 'cls' trong detections_json để ResultPage dùng luôn
+  Map<String, dynamic> _normalizeDetections(Map<String, dynamic> src) {
+    final map = Map<String, dynamic>.from(src);
+    final dets = map['detections'];
+
+    if (dets is List) {
+      map['detections'] = dets.map((e) {
+        if (e is Map) {
+          final mm = Map<String, dynamic>.from(e);
+          final rawCls = (mm['cls'] ?? '').toString();
+          mm['cls'] = normalizeDiseaseKey(rawCls);
+          return mm;
+        }
+        return e;
+      }).toList();
+    }
+
+    return map;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -59,7 +94,8 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
       url: 'ws://$ROS_IP:$ROSBRIDGE_PORT',
       onStatus: (s) => setState(() => _status = s),
       onAnnotatedImage: (jpeg) => setState(() => _annotatedBytes = jpeg),
-      onDetections: (m) => setState(() => _detections = m),
+      onDetections: (m) =>
+          setState(() => _detections = _normalizeDetections(m)),
     );
 
     try {
@@ -88,19 +124,15 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
       if (cameras.isEmpty) {
         setState(() {
           _cameraReady = false;
-          _status = 'Không tìm thấy camera trên thiết bị.';
+          _status = 'Không tìm thấy camera.';
         });
         return;
       }
 
-      final backCamera = cameras.firstWhere(
-            (c) => c.lensDirection == CameraLensDirection.back,
-        orElse: () => cameras.first,
-      );
+      final camera = cameras.first;
 
-      _cameraController?.dispose();
       _cameraController = CameraController(
-        backCamera,
+        camera,
         ResolutionPreset.medium,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.bgra8888,
@@ -125,17 +157,14 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   }
 
   Future<void> _startImageStream() async {
-    final controller = _cameraController;
-    if (controller == null || !controller.value.isInitialized) return;
-    if (_isStreaming) return;
+    if (_cameraController == null || _isStreaming) return;
 
-    setState(() {
-      _isStreaming = true;
-      _status = 'Đang stream & nhận diện...';
-    });
+    _isStreaming = true;
+    _lastSent = DateTime.now();
 
-    await controller.startImageStream((CameraImage image) async {
-      if (!_isStreaming || !_rosConnected) return;
+    _cameraController!.startImageStream((image) {
+      _srcWidth = image.width;
+      _srcHeight = image.height;
 
       final now = DateTime.now();
       if (_lastSent != null &&
@@ -153,7 +182,9 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         }
       } catch (e) {
         if (mounted) {
-          setState(() => _status = 'Lỗi gửi frame: $e');
+          setState(() {
+            _status = 'Lỗi gửi frame: $e';
+          });
         }
       } finally {
         _sendingFrame = false;
@@ -162,40 +193,35 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   }
 
   Future<void> _stopImageStream() async {
-    _isStreaming = false;
+    if (_cameraController == null || !_isStreaming) return;
     try {
-      if (_cameraController?.value.isStreamingImages == true) {
-        await _cameraController?.stopImageStream();
-      }
+      await _cameraController!.stopImageStream();
     } catch (_) {}
-    if (mounted) {
-      setState(() {
-        _status = 'Đã dừng stream.';
-      });
-    }
+    _isStreaming = false;
   }
 
-  // CameraImage BGRA -> JPEG
   Uint8List? _convertCameraImageToJpeg(CameraImage image) {
-    if (image.format.group != ImageFormatGroup.bgra8888) {
+    try {
+      // BGRA8888 -> Image
+      final width = image.width;
+      final height = image.height;
+
+      final bgra = image.planes[0].bytes;
+      final img = imglib.Image.fromBytes(
+        width: width,
+        height: height,
+        bytes: bgra.buffer,
+        order: imglib.ChannelOrder.bgra,
+      );
+
+      final jpeg = imglib.encodeJpg(img, quality: 85);
+      return Uint8List.fromList(jpeg);
+    } catch (e) {
+      if (kDebugMode) {
+        print('Lỗi convert CameraImage -> JPEG: $e');
+      }
       return null;
     }
-
-    final plane = image.planes[0];
-    final bytes = plane.bytes;
-
-    _srcWidth = image.width;
-    _srcHeight = image.height;
-
-    final imglib.Image img = imglib.Image.fromBytes(
-      bytes: bytes.buffer,
-      width: image.width,
-      height: image.height,
-      numChannels: 4,
-      order: imglib.ChannelOrder.bgra,
-    );
-
-    return Uint8List.fromList(imglib.encodeJpg(img, quality: 70));
   }
 
   @override
@@ -214,23 +240,16 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
       appBar: AppBar(
         title: const Text('Stream camera & nhận diện'),
         actions: [
-          Icon(
-            _rosConnected ? Icons.cloud_done : Icons.cloud_off,
-            color: _rosConnected ? Colors.green : Colors.red,
-          ),
-          const SizedBox(width: 12),
-        ],
-      ),
-      backgroundColor: const Color(0xFFF4F8F5),
-      bottomNavigationBar: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-          child: FilledButton.icon(
-            icon: const Icon(Icons.visibility),
-            label: const Text('Xem kết quả chi tiết'),
-            onPressed: !hasFrame
-                ? null
-                : () {
+          IconButton(
+            icon: const Icon(Icons.info_outline),
+            onPressed: () {
+              if (_detections == null) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                      content: Text('Chưa có kết quả nhận diện từ ROS.')),
+                );
+                return;
+              }
               Navigator.pushNamed(
                 context,
                 ResultPage.routeName,
@@ -238,11 +257,12 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                   'rawPath': null,
                   'annotated': _annotatedBytes,
                   'detections': _detections,
+                  'latencyMs': _detections?['latency_ms'],
                 },
               );
             },
           ),
-        ),
+        ],
       ),
       body: SafeArea(
         child: Padding(
@@ -258,71 +278,77 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
               Expanded(
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final size = Size(
-                        constraints.maxWidth,
-                        constraints.maxHeight,
-                      );
-                      return Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          // VIDEO GỐC
-                          if (_cameraReady && _cameraController != null)
-                            CameraPreview(_cameraController!)
-                          else
-                            const Center(
-                              child: Text(
-                                'Đang khởi tạo camera...\n'
-                                    'Nếu quá lâu không hiện, kiểm tra lại quyền Camera.',
-                                textAlign: TextAlign.center,
-                              ),
-                            ),
+                  child: Container(
+                    color: Colors.black,
+                    child: hasFrame
+                        ? LayoutBuilder(
+                      builder: (context, constraints) {
+                        final w = constraints.maxWidth;
+                        final h = constraints.maxHeight;
 
-                          // ẢNH ANNOTATED TỪ ROS (có bbox vẽ sẵn) ĐÈ LÊN
-                          if (_annotatedBytes != null)
-                            Image.memory(
-                              _annotatedBytes!,
-                              fit: BoxFit.contain,
+                        Widget base;
+                        if (_annotatedBytes != null) {
+                          base = Image.memory(
+                            _annotatedBytes!,
+                            fit: BoxFit.contain,
+                            width: w,
+                            height: h,
+                          );
+                        } else if (_cameraController != null &&
+                            _cameraController!.value.isInitialized) {
+                          base = CameraPreview(_cameraController!);
+                        } else {
+                          base = const Center(
+                            child: Text(
+                              'Đang mở camera...',
+                              style: TextStyle(color: Colors.white),
                             ),
+                          );
+                        }
 
-                          // Nếu sau này ROS gửi detections_json thì vẽ thêm bbox
-                          if (_detections != null &&
-                              _srcWidth != null &&
-                              _srcHeight != null)
-                            CustomPaint(
-                              painter: _DetectionPainter(
-                                detections: _detections!,
-                                srcWidth: _srcWidth!.toDouble(),
-                                srcHeight: _srcHeight!.toDouble(),
+                        return Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            base,
+                            if (_detections != null &&
+                                _srcWidth != null &&
+                                _srcHeight != null)
+                              CustomPaint(
+                                painter: _DetectionPainter(
+                                  detections: _detections!,
+                                  srcWidth: _srcWidth!,
+                                  srcHeight: _srcHeight!,
+                                ),
                               ),
-                              size: size,
-                            ),
-                        ],
-                      );
-                    },
+                          ],
+                        );
+                      },
+                    )
+                        : const Center(
+                      child: Text(
+                        'Đang mở camera...',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                    ),
                   ),
                 ),
               ),
               const SizedBox(height: 12),
               Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('Khởi động lại stream'),
-                      onPressed: () async {
-                        await _stopImageStream();
-                        await _initCameraAndStream();
-                      },
+                  Text(
+                    _rosConnected ? 'ROS: Connected' : 'ROS: Disconnected',
+                    style: TextStyle(
+                      color: _rosConnected ? Colors.green : Colors.red,
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      icon: const Icon(Icons.stop_circle_outlined),
-                      label: const Text('Dừng stream'),
-                      onPressed: _isStreaming ? _stopImageStream : null,
+                  Text(
+                    _cameraReady ? 'Camera: OK' : 'Camera: ...',
+                    style: TextStyle(
+                      color: _cameraReady ? Colors.green : Colors.red,
+                      fontWeight: FontWeight.w500,
                     ),
                   ),
                 ],
@@ -335,11 +361,10 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   }
 }
 
-/// Vẽ bbox từ detections_json (nếu có)
 class _DetectionPainter extends CustomPainter {
   final Map<String, dynamic> detections;
-  final double srcWidth;
-  final double srcHeight;
+  final int srcWidth;
+  final int srcHeight;
 
   _DetectionPainter({
     required this.detections,
@@ -355,14 +380,14 @@ class _DetectionPainter extends CustomPainter {
     final scaleX = size.width / srcWidth;
     final scaleY = size.height / srcHeight;
 
-    final boxPaint = Paint()
+    final paintRect = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2
-      ..color = Colors.redAccent;
+      ..color = Colors.greenAccent;
 
-    final bgPaint = Paint()
+    final paintBg = Paint()
       ..style = PaintingStyle.fill
-      ..color = Colors.redAccent.withOpacity(0.7);
+      ..color = Colors.black.withOpacity(0.6);
 
     for (final raw in dets) {
       final m = Map<String, dynamic>.from(raw as Map);
@@ -380,39 +405,31 @@ class _DetectionPainter extends CustomPainter {
       final y2 = bbox[3] * scaleY;
 
       final rect = Rect.fromLTRB(x1, y1, x2, y2);
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(rect, const Radius.circular(4)),
-        boxPaint,
-      );
+      canvas.drawRect(rect, paintRect);
 
       final label =
           '${cls.isEmpty ? 'Object' : cls} ${(score * 100).toStringAsFixed(1)}%';
 
-      final textSpan = TextSpan(
-        text: label,
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-        ),
-      );
       final tp = TextPainter(
-        text: textSpan,
+        text: TextSpan(
+          text: label,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 12,
+          ),
+        ),
         textDirection: TextDirection.ltr,
         maxLines: 1,
-      )..layout();
+      )..layout(maxWidth: size.width);
 
       final labelRect = Rect.fromLTWH(
         x1,
-        y1 - tp.height - 4 < 0 ? y1 + 2 : y1 - tp.height - 4,
+        y1 - tp.height - 4,
         tp.width + 8,
         tp.height + 4,
       );
 
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(labelRect, const Radius.circular(3)),
-        bgPaint,
-      );
+      canvas.drawRect(labelRect, paintBg);
       tp.paint(
         canvas,
         Offset(labelRect.left + 4, labelRect.top + 2),
