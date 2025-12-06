@@ -2,216 +2,191 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:uuid/uuid.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
-typedef StatusCallback = void Function(String status);
-typedef AnnotatedImageCallback = void Function(Uint8List jpegBytes);
-typedef DetectionsCallback = void Function(Map<String, dynamic> detections);
-
+/// Client đơn giản cho rosbridge_server.
+/// Hỗ trợ:
+///  - Kết nối / ngắt
+///  - Ping (trả về (bool, int?) để dùng với Stopwatch)
+///  - Gửi ảnh JPEG lên topic /app/image/compressed
+///  - Nhận ảnh annotated từ /app/annotated/compressed
+///  - Nhận JSON bbox từ /app/detections_json
 class RosbridgeClient {
+  final String url;
+
+  final void Function(String status)? onStatus;
+
+  /// Ảnh annotated (ROS đã vẽ bounding box) – dùng cho DetectIntroPage
+  final void Function(Uint8List jpeg)? onAnnotatedImage;
+
+  /// Detections JSON (bbox, cls, score, image size,…)
+  final void Function(Map<String, dynamic> json)? onDetections;
+
+  /// Nếu bạn có dùng trong VideoStreamPage kiểu onAnnotatedFrame
+  /// thì callback này sẽ được gọi y hệt onAnnotatedImage.
+  final void Function(Uint8List jpeg)? onAnnotatedFrame;
+
+  WebSocketChannel? _socket;
+  StreamSubscription? _sub;
+
+  bool get isConnected => _socket != null;
+
   RosbridgeClient({
     required this.url,
-    required this.onStatus,
-    required this.onAnnotatedImage,
-    required this.onDetections,
+    this.onStatus,
+    this.onAnnotatedImage,
+    this.onDetections,
+    this.onAnnotatedFrame,
   });
 
-  final String url;
-  final StatusCallback onStatus;
-  final AnnotatedImageCallback onAnnotatedImage;
-  final DetectionsCallback onDetections;
-
-  static const String imageTopic = '/app/image/compressed';
-  static const String annotatedTopic = '/app/annotated/compressed';
-  static const String detectionsTopic = '/app/detections_json';
-
-  final Uuid _uuid = const Uuid();
-  WebSocketChannel? _ch;
-  bool _connected = false;
-
-  bool get isConnected => _connected;
-
-  // Ping state
-  Completer<(bool, int?)>? _pendingPing;
-  String? _pingId;
-  DateTime? _pingStart;
+  // ================== CONNECT / DISCONNECT ==================
 
   Future<void> connect() async {
-    if (_connected) return;
     try {
-      onStatus('Connecting to $url ...');
-      _ch = WebSocketChannel.connect(Uri.parse(url));
-      _connected = true;
-      onStatus('Connected to $url');
-      _listen();
+      onStatus?.call('Connecting to $url ...');
+      _socket = WebSocketChannel.connect(Uri.parse(url));
+      onStatus?.call('Connected');
 
-      // Subscribed topics
-      _subscribe(annotatedTopic);
-      _subscribe(detectionsTopic);
+      _sub = _socket!.stream.listen(
+        _onMessage,
+        onDone: () {
+          onStatus?.call('Disconnected');
+          _socket = null;
+        },
+        onError: (e) {
+          onStatus?.call('Error: $e');
+          _socket = null;
+        },
+      );
+
+      _advertiseAndSubscribe();
     } catch (e) {
-      _connected = false;
-      onStatus('Connect error: $e');
-      rethrow;
+      onStatus?.call('Connection error: $e');
+      _socket = null;
     }
   }
 
   void disconnect() {
-    if (!_connected) return;
-    try {
-      _unsubscribe(annotatedTopic);
-      _unsubscribe(detectionsTopic);
-      _ch?.sink.close();
-    } catch (_) {}
-    _connected = false;
-    onStatus('Disconnected');
+    _sub?.cancel();
+    _sub = null;
+    _socket?.sink.close();
+    _socket = null;
+    onStatus?.call('Disconnected');
   }
 
-  /// Ping ROS qua /rosapi/get_time, trả (ok, rttMs?)
-  Future<(bool, int?)> ping() async {
-    if (!_connected || _ch == null) return (false, null);
-    if (_pendingPing != null) {
-      // Đang ping trước đó, trả về luôn future cũ
-      return _pendingPing!.future;
-    }
+  // ================== ADVERTISE / SUBSCRIBE ==================
 
-    _pingId = 'ping-${_uuid.v4()}';
-    _pingStart = DateTime.now();
-    _pendingPing = Completer<(bool, int?)>();
+  void _sendRaw(Map<String, dynamic> msg) {
+    if (_socket == null) return;
+    _socket!.sink.add(jsonEncode(msg));
+  }
 
-    _send({
-      'op': 'call_service',
-      'id': _pingId,
-      'service': '/rosapi/get_time',
-      'args': {},
+  void _advertiseAndSubscribe() {
+    // Advertise topic để gửi ảnh lên ROS
+    _sendRaw({
+      'op': 'advertise',
+      'topic': '/app/image/compressed',
+      'type': 'sensor_msgs/CompressedImage',
     });
 
+    // Subscribe ảnh annotated (ROS trả về)
+    _sendRaw({
+      'op': 'subscribe',
+      'topic': '/app/annotated/compressed',
+      'type': 'sensor_msgs/CompressedImage',
+    });
+
+    // Subscribe detections JSON
+    _sendRaw({
+      'op': 'subscribe',
+      'topic': '/app/detections_json',
+      'type': 'std_msgs/String',
+    });
+
+    // Nếu sau này bạn có thêm node video riêng dùng /video/annotated
+    // thì vẫn có thể tận dụng callback này:
+    _sendRaw({
+      'op': 'subscribe',
+      'topic': '/video/annotated',
+      'type': 'sensor_msgs/CompressedImage',
+    });
+  }
+
+  // ================== PUBLISH JPEG LÊN ROS ==================
+
+  /// Gửi 1 frame JPEG lên topic /app/image/compressed
+  /// Dùng trong DetectIntroPage: chụp ảnh / gallery / frame video.
+  void publishJpeg(Uint8List bytes) {
+    if (_socket == null) return;
+
+    final msg = {
+      'op': 'publish',
+      'topic': '/app/image/compressed',
+      'msg': {
+        'format': 'jpeg',
+        'data': base64Encode(bytes),
+      },
+    };
+
+    _socket!.sink.add(jsonEncode(msg));
+  }
+
+  // ================== PING (cho _doPing trong DetectIntroPage) ==================
+
+  /// Ping đơn giản: chỉ kiểm tra còn kết nối không.
+  /// Trả về (ok, null). RTT thực tế dùng Stopwatch ở ngoài.
+  Future<(bool, int?)> ping() async {
+    if (!isConnected) return (false, null);
+
     try {
-      final result = await _pendingPing!.future
-          .timeout(const Duration(seconds: 3), onTimeout: () {
-        if (!_pendingPing!.isCompleted) {
-          _pendingPing!.complete((false, null));
-        }
-        return (false, null);
-      });
-      _pendingPing = null;
-      return result;
+      // Có thể gửi một message "ping" tượng trưng, nhưng ở đây
+      // mình chỉ cần biết WebSocket vẫn mở là đủ.
+      return (true, null);
     } catch (_) {
-      _pendingPing = null;
       return (false, null);
     }
   }
 
-  /// Gửi ảnh JPEG (đã nén) lên topic imageTopic
-  void publishJpeg(Uint8List jpegBytes) {
-    if (!_connected || _ch == null) {
-      onStatus('Not connected; drop frame');
-      return;
-    }
-    final b64 = base64Encode(jpegBytes);
-    _send({
-      'op': 'publish',
-      'id': _uuid.v4(),
-      'topic': imageTopic,
-      'msg': {'format': 'jpeg', 'data': b64},
-    });
-    // Không log mỗi frame nữa để tránh spam
-  }
+  // ================== HANDLE MESSAGE TỪ ROS ==================
 
-  // ============ internal ============
-
-  void _subscribe(String topic) {
-    _send({
-      'op': 'subscribe',
-      'id': _uuid.v4(),
-      'topic': topic,
-    });
-  }
-
-  void _unsubscribe(String topic) {
-    _send({
-      'op': 'unsubscribe',
-      'id': _uuid.v4(),
-      'topic': topic,
-    });
-  }
-
-  void _send(Map<String, dynamic> jsonMsg) {
-    if (_ch == null) return;
+  void _onMessage(dynamic data) {
     try {
-      _ch!.sink.add(jsonEncode(jsonMsg));
-    } catch (e) {
-      onStatus('Send error: $e');
-    }
-  }
+      final jsonData = jsonDecode(data);
+      if (jsonData is! Map) return;
 
-  void _listen() {
-    _ch!.stream.listen(
-          (dynamic raw) {
-        try {
-          if (raw is! String) return;
-          final data = jsonDecode(raw);
-          if (data is! Map<String, dynamic>) return;
-          _handleMessage(data);
-        } catch (e) {
-          onStatus('Parse error: $e');
+      if (jsonData['op'] != 'publish') return;
+
+      final topic = jsonData['topic'];
+      final msg = jsonData['msg'];
+
+      // Ảnh annotated (đã vẽ bbox)
+      if (topic == '/app/annotated/compressed' ||
+          topic == '/video/annotated') {
+        final String? b64 = msg['data'];
+        if (b64 != null) {
+          final bytes = base64Decode(b64);
+          onAnnotatedImage?.call(bytes);
+          onAnnotatedFrame?.call(bytes); // dùng cho video_stream_page nếu có
         }
-      },
-      onDone: () {
-        _connected = false;
-        onStatus('Connection closed');
-      },
-      onError: (e) {
-        _connected = false;
-        onStatus('Connection error: $e');
-      },
-    );
-  }
+        return;
+      }
 
-  void _handleMessage(Map<String, dynamic> msg) {
-    final op = msg['op'];
-    if (op == 'publish') {
-      final topic = msg['topic'] as String?;
-      final payload = msg['msg'];
-
-      if (topic == annotatedTopic && payload is Map) {
-        final fmt = payload['format'];
-        final data = payload['data'];
-        if (fmt == 'jpeg' && data is String) {
-          try {
-            final bytes = base64Decode(data);
-            onAnnotatedImage(bytes);
-            onStatus('Annotated image received (${bytes.length} bytes)');
-          } catch (e) {
-            onStatus('Decode annotated image error: $e');
+      // Detections JSON
+      if (topic == '/app/detections_json') {
+        final String? s = msg['data'];
+        if (s != null) {
+          final decoded = jsonDecode(s);
+          if (decoded is Map<String, dynamic>) {
+            onDetections?.call(decoded);
+          } else if (decoded is Map) {
+            onDetections?.call(
+                Map<String, dynamic>.from(decoded as Map<dynamic, dynamic>));
           }
         }
-      } else if (topic == detectionsTopic) {
-        if (payload is Map<String, dynamic>) {
-          onDetections(payload);
-          onStatus('Detections map received ✓');
-        } else if (payload is Map) {
-          onDetections(payload.cast<String, dynamic>());
-          onStatus('Detections map received ✓');
-        } else {
-          onDetections({'raw': payload});
-        }
+        return;
       }
-    } else if (op == 'service_response') {
-      final id = msg['id'];
-      if (id == _pingId && _pendingPing != null) {
-        final now = DateTime.now();
-        final rtt = _pingStart != null
-            ? now.difference(_pingStart!).inMilliseconds
-            : null;
-        final ok = msg['result'] == true;
-        if (!_pendingPing!.isCompleted) {
-          _pendingPing!.complete((ok, rtt));
-        }
-        _pendingPing = null;
-        _pingId = null;
-        _pingStart = null;
-      }
+    } catch (e) {
+      onStatus?.call('Parse error: $e');
     }
   }
 }

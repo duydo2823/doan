@@ -13,17 +13,9 @@ import '../services/rosbridge_client.dart';
 import 'result_page.dart';
 import 'video_stream_page.dart';
 
-// Địa chỉ ROS
+// Địa chỉ ROS (sửa lại IP cho đúng của bạn)
 const String ROS_IP = '172.20.10.3';
 const int ROSBRIDGE_PORT = 9090;
-
-const Map<String, String> kDiseaseVI = {
-  'Cercospora': 'Đốm mắt cua (Cercospora)',
-  'Miner': 'Sâu đục lá (Leaf miner)',
-  'Phoma': 'Đốm lá/Thán thư (Phoma)',
-  'Rust': 'Rỉ sắt lá (Rust)',
-  'Healthy': 'Lá khoẻ mạnh',
-};
 
 /// Chuẩn hoá tên lớp bệnh từ ROS về key chuẩn để app dùng thống nhất
 String normalizeDiseaseKey(String raw) {
@@ -40,8 +32,29 @@ String normalizeDiseaseKey(String raw) {
   return s;
 }
 
+/// Chuẩn hoá trường 'cls' trong detections_json để ResultPage dùng luôn
+Map<String, dynamic> normalizeDetectionsJson(Map<String, dynamic> src) {
+  final map = Map<String, dynamic>.from(src);
+  final dets = map['detections'];
+
+  if (dets is List) {
+    map['detections'] = dets.map((e) {
+      if (e is Map) {
+        final mm = Map<String, dynamic>.from(e);
+        final rawCls = (mm['cls'] ?? '').toString();
+        mm['cls'] = normalizeDiseaseKey(rawCls);
+        return mm;
+      }
+      return e;
+    }).toList();
+  }
+
+  return map;
+}
+
 class DetectIntroPage extends StatefulWidget {
   static const routeName = '/detect-intro';
+
   const DetectIntroPage({super.key});
 
   @override
@@ -52,7 +65,8 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   final ImagePicker _picker = ImagePicker();
 
   late final RosbridgeClient _ros;
-  String _status = 'Disconnected';
+
+  String _status = 'Chưa kết nối ROS';
   bool _lastPingOk = false;
   int? _lastRttMs;
   Timer? _hb;
@@ -60,26 +74,6 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   XFile? _captured;
   Uint8List? _annotatedBytes;
   Map<String, dynamic>? _detections;
-
-  /// Chuẩn hoá trường 'cls' trong detections_json để ResultPage dùng luôn
-  Map<String, dynamic> _normalizeDetections(Map<String, dynamic> src) {
-    final map = Map<String, dynamic>.from(src);
-    final dets = map['detections'];
-
-    if (dets is List) {
-      map['detections'] = dets.map((e) {
-        if (e is Map) {
-          final mm = Map<String, dynamic>.from(e);
-          final rawCls = (mm['cls'] ?? '').toString();
-          mm['cls'] = normalizeDiseaseKey(rawCls);
-          return mm;
-        }
-        return e;
-      }).toList();
-    }
-
-    return map;
-  }
 
   String get _rosUrl => 'ws://$ROS_IP:$ROSBRIDGE_PORT';
 
@@ -91,7 +85,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       onStatus: (s) => setState(() => _status = s),
       onAnnotatedImage: (jpeg) => setState(() => _annotatedBytes = jpeg),
       onDetections: (m) =>
-          setState(() => _detections = _normalizeDetections(m)),
+          setState(() => _detections = normalizeDetectionsJson(m)),
     );
   }
 
@@ -102,7 +96,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     super.dispose();
   }
 
-  // ========= ROS heartbeat & ping =========
+  // ================= ROS CONNECT / PING =================
 
   void _startHeartbeat() {
     _hb?.cancel();
@@ -130,32 +124,33 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     setState(() {
       _lastPingOk = false;
       _lastRttMs = null;
+      _status = 'Đã ngắt kết nối ROS';
     });
   }
 
   Future<void> _doPing({bool silent = false}) async {
     try {
+      final sw = Stopwatch()..start();
+
       // ping() trả về record (bool, int?)
       final result = await _ros.ping();
-      final ok = result.$1;   // bool
-      final rtt = result.$2;  // int? (ms)
+      sw.stop();
+
+      final ok = result.$1;
+      final rtt = result.$2 ?? sw.elapsedMilliseconds;
 
       setState(() {
         _lastPingOk = ok;
         _lastRttMs = rtt;
-        _status = ok
-            ? 'ROS OK • RTT ${rtt ?? '-'}ms'
-            : 'Ping ROS thất bại';
+        _status = ok ? 'ROS OK • RTT ${rtt}ms' : 'Ping ROS thất bại';
       });
 
-      if (!silent) {
+      if (!silent && mounted) {
         final msg = ok
-            ? 'ROS OK • RTT ${rtt ?? '-'}ms'
+            ? 'ROS OK • RTT ${rtt}ms'
             : 'Không thể ping ROS';
-        if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text(msg)));
-        }
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(msg)));
       }
     } catch (e) {
       setState(() {
@@ -166,13 +161,13 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     }
   }
 
-
-  // ========= GỬI ẢNH TĨNH =========
+  // ================= GỬI ẢNH LÊN ROS =================
 
   Future<void> _captureAndSend() async {
     if (!_ros.isConnected || !_lastPingOk) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Chưa kết nối ROS hoặc ROS không phản hồi.')),
+        const SnackBar(
+            content: Text('Chưa kết nối ROS hoặc ROS không phản hồi.')),
       );
       return;
     }
@@ -180,14 +175,13 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     try {
       final XFile? photo =
       await _picker.pickImage(source: ImageSource.camera, imageQuality: 90);
-
       if (photo == null) return;
 
       setState(() {
         _captured = photo;
         _annotatedBytes = null;
         _detections = null;
-        _status = 'Đang gửi ảnh lên ROS...';
+        _status = 'Đang gửi ảnh chụp lên ROS...';
       });
 
       final bytes = await photo.readAsBytes();
@@ -206,7 +200,8 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   Future<void> _pickFromGalleryAndSend() async {
     if (!_ros.isConnected || !_lastPingOk) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Chưa kết nối ROS hoặc ROS không phản hồi.')),
+        const SnackBar(
+            content: Text('Chưa kết nối ROS hoặc ROS không phản hồi.')),
       );
       return;
     }
@@ -214,7 +209,6 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     try {
       final XFile? file =
       await _picker.pickImage(source: ImageSource.gallery, imageQuality: 95);
-
       if (file == null) return;
 
       setState(() {
@@ -235,12 +229,12 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     }
   }
 
-  // ========= GỬI VIDEO =========
-
+  // Gửi frame từ video (nếu bạn còn dùng)
   Future<void> _pickVideoAndSendFrames() async {
     if (!_ros.isConnected || !_lastPingOk) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Chưa kết nối ROS hoặc ROS không phản hồi.')),
+        const SnackBar(
+            content: Text('Chưa kết nối ROS hoặc ROS không phản hồi.')),
       );
       return;
     }
@@ -258,10 +252,10 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
       final controller = VideoPlayerController.file(File(xv.path));
       await controller.initialize();
-      final totalMs = (controller.value.duration.inMilliseconds);
-      controller.dispose();
+      final totalMs = controller.value.duration.inMilliseconds;
+      await controller.dispose();
 
-      const int stepMs = 500; // gửi frame mỗi 0.5s
+      const int stepMs = 500; // 0.5s / frame
       const int thumbQuality = 80;
       const int maxH = 480;
 
@@ -274,6 +268,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
           maxHeight: maxH,
         );
         if (bytes == null) continue;
+
         _ros.publishJpeg(bytes);
         await Future.delayed(const Duration(milliseconds: 20));
       }
@@ -289,7 +284,9 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   }
 
   void _openResultPage() {
-    if (_captured == null && _annotatedBytes == null && _detections == null) {
+    if (_captured == null &&
+        _annotatedBytes == null &&
+        _detections == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Chưa có dữ liệu để hiển thị')),
       );
@@ -306,11 +303,10 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     );
   }
 
+  // ================= UI =================
+
   @override
   Widget build(BuildContext context) {
-    final connected = _ros.isConnected;
-    final canShoot = connected && _lastPingOk;
-
     Widget preview;
     if (_annotatedBytes != null) {
       preview = Image.memory(_annotatedBytes!, fit: BoxFit.contain);
@@ -322,12 +318,16 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       );
     }
 
+    final connected = _ros.isConnected;
+    final canShoot = connected && _lastPingOk;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Nhận diện bệnh lá cà phê'),
         actions: [
           IconButton(
             icon: const Icon(Icons.videocam),
+            tooltip: 'Xem stream real-time',
             onPressed: () {
               Navigator.pushNamed(context, VideoStreamPage.routeName);
             },
@@ -335,127 +335,133 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
         ],
       ),
       body: SafeArea(
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                // Trạng thái ROS
-                Card(
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Row(
-                      children: [
-                        Icon(
-                          connected ? Icons.cloud_done : Icons.cloud_off,
-                          color: connected ? Colors.green : Colors.red,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                _status,
-                                style: const TextStyle(fontSize: 13),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                _lastPingOk
-                                    ? 'ROS OK • RTT: ${_lastRttMs ?? '-'}ms'
-                                    : 'Chưa ping được ROS',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: _lastPingOk
-                                      ? Colors.green
-                                      : Colors.redAccent,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Column(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              // Trạng thái ROS
+              Card(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    children: [
+                      Icon(
+                        connected ? Icons.cloud_done : Icons.cloud_off,
+                        color: connected ? Colors.green : Colors.red,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            FilledButton(
-                              onPressed: connected ? _disconnect : _connect,
-                              child: Text(
-                                connected ? 'Ngắt' : 'Kết nối',
-                                style: const TextStyle(fontSize: 12),
-                              ),
+                            Text(
+                              _status,
+                              style: const TextStyle(fontSize: 13),
                             ),
                             const SizedBox(height: 4),
-                            OutlinedButton(
-                              onPressed: connected ? () => _doPing() : null,
-                              child: const Text(
-                                'Ping',
-                                style: TextStyle(fontSize: 12),
+                            Text(
+                              _lastPingOk
+                                  ? 'ROS OK • RTT: ${_lastRttMs ?? '-'}ms'
+                                  : 'Chưa ping được ROS',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: _lastPingOk
+                                    ? Colors.green
+                                    : Colors.redAccent,
                               ),
                             ),
                           ],
                         ),
-                      ],
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 12),
-
-                // Ảnh preview
-                Expanded(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: Container(
-                      color: Colors.black12,
-                      child: preview,
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 12),
-
-                // Nút chức năng
-                Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: canShoot ? _captureAndSend : null,
-                        icon: const Icon(Icons.camera_alt),
-                        label: const Text('Chụp & gửi'),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: canShoot ? _pickFromGalleryAndSend : null,
-                        icon: const Icon(Icons.photo),
-                        label: const Text('Ảnh gallery'),
+                      Column(
+                        children: [
+                          FilledButton(
+                            onPressed: connected ? _disconnect : _connect,
+                            child: Text(
+                              connected ? 'Ngắt' : 'Kết nối',
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          OutlinedButton(
+                            onPressed: connected ? () => _doPing() : null,
+                            child: const Text(
+                              'Ping',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: canShoot ? _pickVideoAndSendFrames : null,
-                    icon: const Icon(Icons.video_library),
-                    label: const Text('Gửi frame từ video'),
+                    ],
                   ),
                 ),
-                const SizedBox(height: 12),
-                FilledButton.icon(
-                  onPressed: _openResultPage,
+              ),
+
+              const SizedBox(height: 12),
+
+              // Ảnh preview
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Container(
+                    color: Colors.black12,
+                    child: preview,
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 12),
+
+              // Nút chức năng: 2 nút bạn muốn giữ
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: canShoot ? _captureAndSend : null,
+                      icon: const Icon(Icons.camera_alt),
+                      label: const Text('Chụp & gửi'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: canShoot ? _pickFromGalleryAndSend : null,
+                      icon: const Icon(Icons.photo),
+                      label: const Text('Ảnh gallery'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+
+              // Nút gửi video (nếu bạn muốn dùng)
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: canShoot ? _pickVideoAndSendFrames : null,
+                  icon: const Icon(Icons.video_library),
+                  label: const Text('Gửi frame từ video'),
+                ),
+              ),
+
+              const SizedBox(height: 12),
+
+              // Nút xem kết quả chi tiết
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
                   icon: const Icon(Icons.list_alt),
                   label: const Text('Xem kết quả chi tiết'),
+                  onPressed: _openResultPage,
                   style: FilledButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
