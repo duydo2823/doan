@@ -1,15 +1,17 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
+
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as imglib;
 
 import '../services/rosbridge_client.dart';
 
-// IP rosbridge (sửa lại nếu khác)
+// Sửa IP cho đúng với máy ROS của bạn
 const String ROS_IP = '172.20.10.3';
 const int ROSBRIDGE_PORT = 9090;
 
-/// Chuẩn hoá tên lớp bệnh (để hiện lên label cho đẹp, không bắt buộc)
+/// Chuẩn hoá tên lớp bệnh cho đẹp
 String normalizeDiseaseKey(String raw) {
   final s = raw.trim();
   final lower = s.toLowerCase();
@@ -62,28 +64,57 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   // Throttle gửi frame
   bool _sendingFrame = false;
   DateTime? _lastSent;
-  final Duration _minInterval = const Duration(milliseconds: 300);
+  final Duration _minInterval = const Duration(milliseconds: 200);
 
-  // Detections & kích thước ảnh nguồn
-  Map<String, dynamic>? _detections;
+  // Kích thước ảnh gốc (lúc gửi lên ROS)
   int? _srcWidth;
   int? _srcHeight;
+
+  // Detections mới nhất từ ROS
+  Map<String, dynamic>? _latestDetections;
+
+  // Detections đã “làm mượt” (giữ lại vài frame nếu YOLO bị miss)
+  Map<String, dynamic>? _stableDetections;
+  int _missingCount = 0;
+  final int _maxMissingHold = 3; // giữ box cũ tối đa 3 lần cập nhật trống
 
   @override
   void initState() {
     super.initState();
 
-    // ROS client: dùng onDetections để overlay bbox
     _ros = RosbridgeClient(
       url: 'ws://$ROS_IP:$ROSBRIDGE_PORT',
       onStatus: (s) => setState(() => _status = s),
-      onAnnotatedImage: (_) {}, // không dùng annotated trong trang này
-      onDetections: (m) =>
-          setState(() => _detections = normalizeDetectionsJson(m)),
+      onAnnotatedImage: (_) {},
+      onDetections: (m) {
+        final norm = normalizeDetectionsJson(m);
+        _updateDetections(norm);
+      },
       onAnnotatedFrame: null,
     );
 
     _initAll();
+  }
+
+  void _updateDetections(Map<String, dynamic> det) {
+    _latestDetections = det;
+
+    final list = det['detections'];
+    if (list is List && list.isNotEmpty) {
+      // Có detect → reset giữ, cập nhật stableDetections
+      _stableDetections = det;
+      _missingCount = 0;
+    } else {
+      // Không detect → giữ lại bbox cũ thêm vài nhịp để đỡ chớp
+      _missingCount += 1;
+      if (_missingCount > _maxMissingHold) {
+        _stableDetections = det; // thật sự trống
+      }
+    }
+
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   Future<void> _initAll() async {
@@ -149,10 +180,6 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         if (jpeg != null) {
           _ros.publishJpeg(jpeg);
         }
-      } catch (e) {
-        if (mounted) {
-          setState(() => _status = 'Lỗi gửi frame: $e');
-        }
       } finally {
         _sendingFrame = false;
       }
@@ -174,7 +201,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
 
       final jpg = imglib.encodeJpg(img, quality: 85);
       return Uint8List.fromList(jpg);
-    } catch (e) {
+    } catch (_) {
       return null;
     }
   }
@@ -200,7 +227,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
       body: SafeArea(
         child: Column(
           children: [
-            // Status bar trên đầu
+            // Status bar
             Padding(
               padding: const EdgeInsets.all(8.0),
               child: Row(
@@ -234,12 +261,14 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                         fit: StackFit.expand,
                         children: [
                           CameraPreview(_cameraController!),
-                          if (_detections != null &&
+
+                          // Overlay bbox đã làm mượt
+                          if (_stableDetections != null &&
                               _srcWidth != null &&
                               _srcHeight != null)
                             CustomPaint(
                               painter: _LiveDetectionPainter(
-                                detections: _detections!,
+                                detections: _stableDetections!,
                                 srcWidth: _srcWidth!,
                                 srcHeight: _srcHeight!,
                               ),
@@ -264,7 +293,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   }
 }
 
-/// Painter vẽ bbox lên preview
+/// Painter vẽ bbox, ĐÃ TÍNH ĐÚNG SCALE + PADDING (HẾT LỆCH)
 class _LiveDetectionPainter extends CustomPainter {
   final Map<String, dynamic> detections;
   final int srcWidth;
@@ -279,23 +308,27 @@ class _LiveDetectionPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final dets = detections['detections'];
-    if (dets is! List) return;
+    if (dets is! List || dets.isEmpty) return;
 
-    // Nếu JSON có image.width/height thì dùng; không thì dùng srcWidth/srcHeight
+    // Kích thước ảnh mà YOLO dùng (từ JSON). Nếu không có thì dùng srcWidth/Height.
     double imgW = srcWidth.toDouble();
     double imgH = srcHeight.toDouble();
     final imgInfo = detections['image'];
     if (imgInfo is Map) {
       final w = imgInfo['width'];
       final h = imgInfo['height'];
-      if (w is num && h is num) {
+      if (w is num && h is num && w > 0 && h > 0) {
         imgW = w.toDouble();
         imgH = h.toDouble();
       }
     }
 
-    final scaleX = size.width / imgW;
-    final scaleY = size.height / imgH;
+    // Tính scale và padding để map ảnh gốc -> preview:
+    // scale = min(width/imgW, height/imgH) -> giữ nguyên tỉ lệ, không méo
+    // offsetX/Y là khoảng viền đen hai bên (letterbox) nếu có.
+    final scale = math.min(size.width / imgW, size.height / imgH);
+    final offsetX = (size.width - imgW * scale) / 2.0;
+    final offsetY = (size.height - imgH * scale) / 2.0;
 
     final rectPaint = Paint()
       ..color = const Color(0xFF00FF00)
@@ -308,18 +341,19 @@ class _LiveDetectionPainter extends CustomPainter {
 
     for (final raw in dets) {
       if (raw is! Map) continue;
-      final box =
+
+      final bbox =
       (raw['bbox'] as List?)?.map((e) => (e as num).toDouble()).toList();
-      if (box == null || box.length != 4) continue;
+      if (bbox == null || bbox.length != 4) continue;
 
       final cls = (raw['cls'] ?? '').toString();
       final score =
       (raw['score'] is num) ? (raw['score'] as num).toDouble() : 0.0;
 
-      final x1 = box[0] * scaleX;
-      final y1 = box[1] * scaleY;
-      final x2 = box[2] * scaleX;
-      final y2 = box[3] * scaleY;
+      final x1 = bbox[0] * scale + offsetX;
+      final y1 = bbox[1] * scale + offsetY;
+      final x2 = bbox[2] * scale + offsetX;
+      final y2 = bbox[3] * scale + offsetY;
 
       canvas.drawRect(Rect.fromLTRB(x1, y1, x2, y2), rectPaint);
 
