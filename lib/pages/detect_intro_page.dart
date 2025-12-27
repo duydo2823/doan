@@ -1,13 +1,10 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:video_player/video_player.dart';
-import 'package:video_thumbnail/video_thumbnail.dart';
 
 import '../services/rosbridge_client.dart';
 import 'result_page.dart';
@@ -28,7 +25,6 @@ String normalizeDiseaseKey(String raw) {
   if (lower.contains('rust')) return 'Rust';
   if (lower.contains('healthy') || lower.contains('normal')) return 'Healthy';
 
-  // Không match gì thì giữ nguyên (đã trim)
   return s;
 }
 
@@ -146,9 +142,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       });
 
       if (!silent && mounted) {
-        final msg = ok
-            ? 'ROS OK • RTT ${rtt}ms'
-            : 'Không thể ping ROS';
+        final msg = ok ? 'ROS OK • RTT ${rtt}ms' : 'Không thể ping ROS';
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(msg)));
       }
@@ -173,8 +167,10 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     }
 
     try {
-      final XFile? photo =
-      await _picker.pickImage(source: ImageSource.camera, imageQuality: 90);
+      final XFile? photo = await _picker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 90,
+      );
       if (photo == null) return;
 
       setState(() {
@@ -207,8 +203,10 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     }
 
     try {
-      final XFile? file =
-      await _picker.pickImage(source: ImageSource.gallery, imageQuality: 95);
+      final XFile? file = await _picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 95,
+      );
       if (file == null) return;
 
       setState(() {
@@ -229,64 +227,8 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     }
   }
 
-  // Gửi frame từ video (nếu bạn còn dùng)
-  Future<void> _pickVideoAndSendFrames() async {
-    if (!_ros.isConnected || !_lastPingOk) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('Chưa kết nối ROS hoặc ROS không phản hồi.')),
-      );
-      return;
-    }
-
-    try {
-      final XFile? xv = await _picker.pickVideo(source: ImageSource.gallery);
-      if (xv == null) return;
-
-      setState(() {
-        _captured = null;
-        _annotatedBytes = null;
-        _detections = null;
-        _status = 'Đang gửi frame từ video lên ROS...';
-      });
-
-      final controller = VideoPlayerController.file(File(xv.path));
-      await controller.initialize();
-      final totalMs = controller.value.duration.inMilliseconds;
-      await controller.dispose();
-
-      const int stepMs = 500; // 0.5s / frame
-      const int thumbQuality = 80;
-      const int maxH = 480;
-
-      for (int t = 0; t < totalMs; t += stepMs) {
-        final bytes = await VideoThumbnail.thumbnailData(
-          video: xv.path,
-          timeMs: t,
-          imageFormat: ImageFormat.JPEG,
-          quality: thumbQuality,
-          maxHeight: maxH,
-        );
-        if (bytes == null) continue;
-
-        _ros.publishJpeg(bytes);
-        await Future.delayed(const Duration(milliseconds: 20));
-      }
-
-      if (mounted) {
-        setState(() {
-          _status = 'Đã gửi xong frame từ video (gallery)';
-        });
-      }
-    } catch (e) {
-      setState(() => _status = 'Lỗi đọc/gửi video: $e');
-    }
-  }
-
   void _openResultPage() {
-    if (_captured == null &&
-        _annotatedBytes == null &&
-        _detections == null) {
+    if (_captured == null && _annotatedBytes == null && _detections == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Chưa có dữ liệu để hiển thị')),
       );
@@ -301,6 +243,10 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
         'detections': _detections,
       },
     );
+  }
+
+  void _openStreamPage() {
+    Navigator.pushNamed(context, VideoStreamPage.routeName);
   }
 
   // ================= UI =================
@@ -324,15 +270,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Nhận diện bệnh lá cà phê'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.videocam),
-            tooltip: 'Xem stream real-time',
-            onPressed: () {
-              Navigator.pushNamed(context, VideoStreamPage.routeName);
-            },
-          ),
-        ],
+        // ✅ BỎ icon góc trên (không cần bấm góc nữa)
       ),
       body: SafeArea(
         child: Padding(
@@ -357,10 +295,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              _status,
-                              style: const TextStyle(fontSize: 13),
-                            ),
+                            Text(_status, style: const TextStyle(fontSize: 13)),
                             const SizedBox(height: 4),
                             Text(
                               _lastPingOk
@@ -388,10 +323,8 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                           const SizedBox(height: 4),
                           OutlinedButton(
                             onPressed: connected ? () => _doPing() : null,
-                            child: const Text(
-                              'Ping',
-                              style: TextStyle(fontSize: 12),
-                            ),
+                            child: const Text('Ping',
+                                style: TextStyle(fontSize: 12)),
                           ),
                         ],
                       ),
@@ -415,7 +348,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
               const SizedBox(height: 12),
 
-              // Nút chức năng: 2 nút bạn muốn giữ
+              // 2 nút giữ nguyên
               Row(
                 children: [
                   Expanded(
@@ -435,15 +368,16 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                   ),
                 ],
               ),
+
               const SizedBox(height: 8),
 
-              // Nút gửi video (nếu bạn muốn dùng)
+              // ✅ Thay nút "Gửi frame từ video" -> "Stream video"
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
-                  onPressed: canShoot ? _pickVideoAndSendFrames : null,
-                  icon: const Icon(Icons.video_library),
-                  label: const Text('Gửi frame từ video'),
+                  onPressed: canShoot ? _openStreamPage : null,
+                  icon: const Icon(Icons.videocam),
+                  label: const Text('Stream video'),
                 ),
               ),
 
