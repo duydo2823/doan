@@ -181,7 +181,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       });
 
       final bytes = await photo.readAsBytes();
-      _ros.publishJpeg(bytes);
+      await _ros.publishJpeg(bytes);
 
       setState(() {
         _status = 'Đã gửi ảnh, chờ kết quả từ ROS...';

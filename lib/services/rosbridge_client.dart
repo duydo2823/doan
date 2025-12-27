@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 /// Client đơn giản cho rosbridge_server.
+///
 /// Hỗ trợ:
 ///  - Kết nối / ngắt
 ///  - Ping (trả về (bool, int?) để dùng với Stopwatch)
@@ -31,6 +32,11 @@ class RosbridgeClient {
 
   bool get isConnected => _socket != null;
 
+  // READY gate để tránh drop frame đầu
+  Completer<void>? _readyCompleter;
+  bool _advertised = false;
+  bool _subscribed = false;
+
   RosbridgeClient({
     required this.url,
     this.onStatus,
@@ -44,6 +50,11 @@ class RosbridgeClient {
   Future<void> connect() async {
     try {
       onStatus?.call('Connecting to $url ...');
+
+      _readyCompleter = Completer<void>();
+      _advertised = false;
+      _subscribed = false;
+
       _socket = WebSocketChannel.connect(Uri.parse(url));
       onStatus?.call('Connected');
 
@@ -60,9 +71,19 @@ class RosbridgeClient {
       );
 
       _advertiseAndSubscribe();
+
+      // ✅ Quan trọng: cho rosbridge/ROS một nhịp để “kịp subscribe”
+      await Future.delayed(const Duration(milliseconds: 250));
+
+      if (!(_readyCompleter?.isCompleted ?? true)) {
+        _readyCompleter!.complete();
+      }
     } catch (e) {
       onStatus?.call('Connection error: $e');
       _socket = null;
+      if (!(_readyCompleter?.isCompleted ?? true)) {
+        _readyCompleter!.completeError(e);
+      }
     }
   }
 
@@ -71,7 +92,24 @@ class RosbridgeClient {
     _sub = null;
     _socket?.sink.close();
     _socket = null;
+
+    _advertised = false;
+    _subscribed = false;
+
     onStatus?.call('Disconnected');
+  }
+
+  // ================== READY ==================
+
+  Future<void> waitReady({Duration timeout = const Duration(seconds: 2)}) async {
+    final c = _readyCompleter;
+    if (c == null) return;
+    try {
+      await c.future.timeout(timeout);
+    } catch (_) {
+      // timeout thì vẫn cho publish tiếp (đỡ treo app),
+      // nhưng sẽ re-advertise trước khi gửi.
+    }
   }
 
   // ================== ADVERTISE / SUBSCRIBE ==================
@@ -82,12 +120,15 @@ class RosbridgeClient {
   }
 
   void _advertiseAndSubscribe() {
+    if (_socket == null) return;
+
     // Advertise topic để gửi ảnh lên ROS
     _sendRaw({
       'op': 'advertise',
       'topic': '/app/image/compressed',
       'type': 'sensor_msgs/CompressedImage',
     });
+    _advertised = true;
 
     // Subscribe ảnh annotated (ROS trả về)
     _sendRaw({
@@ -103,21 +144,30 @@ class RosbridgeClient {
       'type': 'std_msgs/String',
     });
 
-    // Nếu sau này bạn có thêm node video riêng dùng /video/annotated
-    // thì vẫn có thể tận dụng callback này:
+    // Nếu node video riêng publish /video/annotated
     _sendRaw({
       'op': 'subscribe',
       'topic': '/video/annotated',
       'type': 'sensor_msgs/CompressedImage',
     });
+
+    _subscribed = true;
   }
 
   // ================== PUBLISH JPEG LÊN ROS ==================
 
   /// Gửi 1 frame JPEG lên topic /app/image/compressed
-  /// Dùng trong DetectIntroPage: chụp ảnh / gallery / frame video.
-  void publishJpeg(Uint8List bytes) {
+  /// ✅ Đã sửa: đợi READY để tránh mất frame đầu
+  Future<void> publishJpeg(Uint8List bytes) async {
     if (_socket == null) return;
+
+    await waitReady();
+
+    // Nếu reconnect hoặc advertise/subscribe chưa xong -> làm lại
+    if (!_advertised || !_subscribed) {
+      _advertiseAndSubscribe();
+      await Future.delayed(const Duration(milliseconds: 150));
+    }
 
     final msg = {
       'op': 'publish',
@@ -131,20 +181,13 @@ class RosbridgeClient {
     _socket!.sink.add(jsonEncode(msg));
   }
 
-  // ================== PING (cho _doPing trong DetectIntroPage) ==================
+  // ================== PING ==================
 
   /// Ping đơn giản: chỉ kiểm tra còn kết nối không.
   /// Trả về (ok, null). RTT thực tế dùng Stopwatch ở ngoài.
   Future<(bool, int?)> ping() async {
     if (!isConnected) return (false, null);
-
-    try {
-      // Có thể gửi một message "ping" tượng trưng, nhưng ở đây
-      // mình chỉ cần biết WebSocket vẫn mở là đủ.
-      return (true, null);
-    } catch (_) {
-      return (false, null);
-    }
+    return (true, null);
   }
 
   // ================== HANDLE MESSAGE TỪ ROS ==================
@@ -166,7 +209,7 @@ class RosbridgeClient {
         if (b64 != null) {
           final bytes = base64Decode(b64);
           onAnnotatedImage?.call(bytes);
-          onAnnotatedFrame?.call(bytes); // dùng cho video_stream_page nếu có
+          onAnnotatedFrame?.call(bytes);
         }
         return;
       }
@@ -180,7 +223,8 @@ class RosbridgeClient {
             onDetections?.call(decoded);
           } else if (decoded is Map) {
             onDetections?.call(
-                Map<String, dynamic>.from(decoded as Map<dynamic, dynamic>));
+              Map<String, dynamic>.from(decoded as Map<dynamic, dynamic>),
+            );
           }
         }
         return;
