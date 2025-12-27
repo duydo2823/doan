@@ -11,7 +11,6 @@ import '../services/rosbridge_client.dart';
 const String ROS_IP = '172.20.10.3';
 const int ROSBRIDGE_PORT = 9090;
 
-// ====== Chuẩn hoá tên lớp bệnh ======
 String normalizeDiseaseKey(String raw) {
   final s = raw.trim();
   final lower = s.toLowerCase();
@@ -63,21 +62,14 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   DateTime? _lastSent;
   final Duration _minInterval = const Duration(milliseconds: 200);
 
-  // Kích thước ảnh THỰC SỰ đã gửi lên ROS (sau khi xoay)
+  // Kích thước ảnh GỬI lên ROS (không xoay)
   int? _sentWidth;
   int? _sentHeight;
 
-  // Detections raw
-  Map<String, dynamic>? _latestDetections;
-
-  // Detections ổn định (giữ box cũ để đỡ chớp)
+  // Detections ổn định (giữ bbox cũ để đỡ chớp)
   Map<String, dynamic>? _stableDetections;
   int _missingCount = 0;
   final int _maxMissingHold = 3;
-
-  // iOS: thường cần xoay 90 để khớp preview portrait.
-  // Nếu bạn thấy ngược hướng (bbox lệch kiểu đối xứng), đổi 90 -> 270.
-  final int _rotateAngle = 90;
 
   @override
   void initState() {
@@ -91,12 +83,11 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         final norm = normalizeDetectionsJson(m);
         _updateDetections(norm);
 
-        // Debug nhanh: xem kích thước ảnh trong JSON ROS trả về
+        // Debug: xem JSON trả về size gì
         final img = norm['image'];
         if (img is Map) {
-          final w = img['width'];
-          final h = img['height'];
-          debugPrint('DET image size: ${w}x$h  sent=${_sentWidth}x$_sentHeight');
+          debugPrint(
+              'DET image size: ${img['width']}x${img['height']}  sent=${_sentWidth}x$_sentHeight');
         }
       },
       onAnnotatedFrame: null,
@@ -106,9 +97,8 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   }
 
   void _updateDetections(Map<String, dynamic> det) {
-    _latestDetections = det;
-
     final list = det['detections'];
+
     if (list is List && list.isNotEmpty) {
       _stableDetections = det;
       _missingCount = 0;
@@ -179,20 +169,15 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
       _lastSent = now;
       _sendingFrame = true;
       try {
-        final jpeg = _convertCameraImageToJpegRotated(image);
-        if (jpeg != null) {
-          _ros.publishJpeg(jpeg);
-        }
+        final jpeg = _convertCameraImageToJpegNoRotate(image);
+        if (jpeg != null) _ros.publishJpeg(jpeg);
       } finally {
         _sendingFrame = false;
       }
     });
   }
 
-  /// ====== FIX CHÍNH: XOAY ẢNH TRƯỚC KHI GỬI ======
-  /// iOS CameraPreview đang hiển thị ảnh đã xoay portrait.
-  /// Nếu ta gửi ảnh chưa xoay (landscape) cho ROS thì bbox trả về lệch.
-  Uint8List? _convertCameraImageToJpegRotated(CameraImage image) {
+  Uint8List? _convertCameraImageToJpegNoRotate(CameraImage image) {
     try {
       final width = image.width;
       final height = image.height;
@@ -205,13 +190,11 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         order: imglib.ChannelOrder.bgra,
       );
 
-      final rotated = imglib.copyRotate(img0, angle: _rotateAngle);
+      // cập nhật kích thước ảnh gửi lên ROS
+      _sentWidth = img0.width;
+      _sentHeight = img0.height;
 
-      // Cập nhật kích thước ảnh đã gửi (quan trọng cho painter)
-      _sentWidth = rotated.width;
-      _sentHeight = rotated.height;
-
-      final jpg = imglib.encodeJpg(rotated, quality: 85);
+      final jpg = imglib.encodeJpg(img0, quality: 85);
       return Uint8List.fromList(jpg);
     } catch (_) {
       return null;
@@ -237,7 +220,6 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
       body: SafeArea(
         child: Column(
           children: [
-            // Status
             Padding(
               padding: const EdgeInsets.all(8),
               child: Row(
@@ -259,7 +241,6 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
               ),
             ),
             const SizedBox(height: 8),
-
             Expanded(
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
@@ -269,13 +250,14 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                       ? Stack(
                     fit: StackFit.expand,
                     children: [
+                      // CameraPreview thực tế là COVER (lấp đầy và crop)
                       CameraPreview(_cameraController!),
 
                       if (_stableDetections != null &&
                           _sentWidth != null &&
                           _sentHeight != null)
                         CustomPaint(
-                          painter: _DetectionPainterFixed(
+                          painter: _DetectionPainterCover(
                             detections: _stableDetections!,
                             sentWidth: _sentWidth!,
                             sentHeight: _sentHeight!,
@@ -299,14 +281,13 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   }
 }
 
-/// ====== Painter FIX LỆCH: SCALE theo contain + offset ======
-/// Bbox từ ROS tính theo ảnh đã gửi (rotated) => sentWidth/sentHeight.
-class _DetectionPainterFixed extends CustomPainter {
+/// ✅ Painter dùng COVER mapping (max scale) để khớp CameraPreview
+class _DetectionPainterCover extends CustomPainter {
   final Map<String, dynamic> detections;
   final int sentWidth;
   final int sentHeight;
 
-  _DetectionPainterFixed({
+  _DetectionPainterCover({
     required this.detections,
     required this.sentWidth,
     required this.sentHeight,
@@ -317,7 +298,7 @@ class _DetectionPainterFixed extends CustomPainter {
     final dets = detections['detections'];
     if (dets is! List || dets.isEmpty) return;
 
-    // Ưu tiên kích thước ảnh trong JSON (ROS trả về)
+    // Ưu tiên size từ JSON (ROS trả về); fallback sentWidth/sentHeight
     double imgW = sentWidth.toDouble();
     double imgH = sentHeight.toDouble();
 
@@ -331,8 +312,10 @@ class _DetectionPainterFixed extends CustomPainter {
       }
     }
 
-    // Scale kiểu contain + offset (bù viền đen)
-    final scale = math.min(size.width / imgW, size.height / imgH);
+    // COVER scale (khác contain): max -> lấp đầy, crop mép
+    final scale = math.max(size.width / imgW, size.height / imgH);
+
+    // offset sẽ thường âm hoặc dương tùy crop
     final offsetX = (size.width - imgW * scale) / 2.0;
     final offsetY = (size.height - imgH * scale) / 2.0;
 
@@ -389,7 +372,7 @@ class _DetectionPainterFixed extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _DetectionPainterFixed oldDelegate) {
+  bool shouldRepaint(covariant _DetectionPainterCover oldDelegate) {
     return oldDelegate.detections != detections ||
         oldDelegate.sentWidth != sentWidth ||
         oldDelegate.sentHeight != sentHeight;
