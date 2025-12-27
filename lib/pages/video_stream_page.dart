@@ -1,4 +1,10 @@
-import 'dart:math' as math;
+// lib/pages/video_stream_page.dart
+//
+// ✅ Stream camera -> resize 640x640 -> JPEG -> gửi ROS
+// ✅ Nhận detections_json (bbox theo 640x640) -> vẽ overlay KHÔNG LỆCH
+// ✅ Giữ bbox cũ vài nhịp để đỡ chớp (hold)
+// ✅ Throttle gửi frame để ROS chạy kịp
+
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
@@ -7,14 +13,14 @@ import 'package:image/image.dart' as imglib;
 
 import '../services/rosbridge_client.dart';
 
-// ====== SỬA IP CHO ĐÚNG MÁY ROS ======
+// ======= SỬA IP/PORT ROS CỦA BẠN Ở ĐÂY =======
 const String ROS_IP = '172.20.10.3';
 const int ROSBRIDGE_PORT = 9090;
 
+// ======= normalize tên class =======
 String normalizeDiseaseKey(String raw) {
   final s = raw.trim();
   final lower = s.toLowerCase();
-
   if (lower.contains('cercospora')) return 'Cercospora';
   if (lower.contains('miner')) return 'Miner';
   if (lower.contains('phoma')) return 'Phoma';
@@ -26,13 +32,11 @@ String normalizeDiseaseKey(String raw) {
 Map<String, dynamic> normalizeDetectionsJson(Map<String, dynamic> src) {
   final map = Map<String, dynamic>.from(src);
   final dets = map['detections'];
-
   if (dets is List) {
     map['detections'] = dets.map((e) {
       if (e is Map) {
         final mm = Map<String, dynamic>.from(e);
-        final rawCls = (mm['cls'] ?? '').toString();
-        mm['cls'] = normalizeDiseaseKey(rawCls);
+        mm['cls'] = normalizeDiseaseKey((mm['cls'] ?? '').toString());
         return mm;
       }
       return e;
@@ -53,23 +57,24 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   late final RosbridgeClient _ros;
 
   String _status = 'Đang kết nối ROS...';
+  bool _connected = false;
 
-  CameraController? _cameraController;
+  CameraController? _cam;
   bool _cameraReady = false;
 
-  // Throttle gửi frame
-  bool _sendingFrame = false;
+  // ======= stream control =======
+  bool _sending = false;
   DateTime? _lastSent;
-  final Duration _minInterval = const Duration(milliseconds: 200);
+  final Duration _minInterval = const Duration(milliseconds: 220); // 180-300ms tuỳ máy
 
-  // Kích thước ảnh GỬI lên ROS (không xoay)
-  int? _sentWidth;
-  int? _sentHeight;
-
-  // Detections ổn định (giữ bbox cũ để đỡ chớp)
+  // ======= detections =======
   Map<String, dynamic>? _stableDetections;
   int _missingCount = 0;
   final int _maxMissingHold = 3;
+
+  // ======= hard-fixed size =======
+  static const int kDetW = 640;
+  static const int kDetH = 640;
 
   @override
   void initState() {
@@ -77,18 +82,32 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
 
     _ros = RosbridgeClient(
       url: 'ws://$ROS_IP:$ROSBRIDGE_PORT',
-      onStatus: (s) => setState(() => _status = s),
+      onStatus: (s) {
+        if (!mounted) return;
+        setState(() => _status = s);
+      },
       onAnnotatedImage: (_) {},
       onDetections: (m) {
         final norm = normalizeDetectionsJson(m);
-        _updateDetections(norm);
 
-        // Debug: xem JSON trả về size gì
+        final dets = norm['detections'];
+        if (dets is List && dets.isNotEmpty) {
+          _stableDetections = norm;
+          _missingCount = 0;
+        } else {
+          _missingCount += 1;
+          if (_missingCount > _maxMissingHold) {
+            _stableDetections = norm; // trống thật
+          }
+        }
+
+        // debug size (nếu ROS trả image.width/height)
         final img = norm['image'];
         if (img is Map) {
-          debugPrint(
-              'DET image size: ${img['width']}x${img['height']}  sent=${_sentWidth}x$_sentHeight');
+          debugPrint('DET(image)=${img['width']}x${img['height']} (expect 640x640)');
         }
+
+        if (mounted) setState(() {});
       },
       onAnnotatedFrame: null,
     );
@@ -96,31 +115,21 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
     _initAll();
   }
 
-  void _updateDetections(Map<String, dynamic> det) {
-    final list = det['detections'];
-
-    if (list is List && list.isNotEmpty) {
-      _stableDetections = det;
-      _missingCount = 0;
-    } else {
-      _missingCount += 1;
-      if (_missingCount > _maxMissingHold) {
-        _stableDetections = det; // thật sự trống
-      }
-    }
-
-    if (mounted) setState(() {});
-  }
-
   Future<void> _initAll() async {
-    await _ros.connect();
-    await _initCameraAndStream();
+    try {
+      await _ros.connect();
+      if (!mounted) return;
+      setState(() => _connected = _ros.isConnected);
+    } catch (_) {}
+
+    await _initCamera();
   }
 
-  Future<void> _initCameraAndStream() async {
+  Future<void> _initCamera() async {
     try {
       final cams = await availableCameras();
       if (cams.isEmpty) {
+        if (!mounted) return;
         setState(() {
           _cameraReady = false;
           _status = 'Không tìm thấy camera.';
@@ -128,15 +137,18 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         return;
       }
 
-      final cam = cams.first;
-      _cameraController = CameraController(
-        cam,
+      // ưu tiên camera sau nếu có
+      final back = cams.where((c) => c.lensDirection == CameraLensDirection.back).toList();
+      final camDesc = back.isNotEmpty ? back.first : cams.first;
+
+      _cam = CameraController(
+        camDesc,
         ResolutionPreset.medium,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.bgra8888,
       );
 
-      await _cameraController!.initialize();
+      await _cam!.initialize();
       if (!mounted) return;
 
       setState(() {
@@ -144,59 +156,63 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         _status = 'Camera OK • Đang stream & gửi lên ROS...';
       });
 
-      await _startImageStream();
+      _lastSent = DateTime.now();
+      await _cam!.startImageStream(_onFrame);
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _cameraReady = false;
-        _status = 'Lỗi khởi tạo camera: $e';
+        _status = 'Lỗi camera: $e';
       });
     }
   }
 
-  Future<void> _startImageStream() async {
-    if (_cameraController == null) return;
+  Future<void> _onFrame(CameraImage image) async {
+    final now = DateTime.now();
+    if (_lastSent != null && now.difference(_lastSent!) < _minInterval) return;
+    if (_sending) return;
 
-    _lastSent = DateTime.now();
+    _lastSent = now;
+    _sending = true;
 
-    _cameraController!.startImageStream((image) async {
-      final now = DateTime.now();
-      if (_lastSent != null && now.difference(_lastSent!) < _minInterval) {
-        return;
+    try {
+      final jpeg = _toJpeg640(image);
+      if (jpeg != null) {
+        _ros.publishJpeg(jpeg);
       }
-      if (_sendingFrame) return;
-
-      _lastSent = now;
-      _sendingFrame = true;
-      try {
-        final jpeg = _convertCameraImageToJpegNoRotate(image);
-        if (jpeg != null) _ros.publishJpeg(jpeg);
-      } finally {
-        _sendingFrame = false;
-      }
-    });
+    } catch (_) {
+      // ignore
+    } finally {
+      _sending = false;
+    }
   }
 
-  Uint8List? _convertCameraImageToJpegNoRotate(CameraImage image) {
+  /// ✅ Convert BGRA camera image -> imglib.Image -> resize 640x640 -> JPEG
+  /// Lưu ý: resize này là "bóp" ảnh (không giữ tỉ lệ) để đồng hệ toạ độ 640x640.
+  Uint8List? _toJpeg640(CameraImage image) {
     try {
-      final width = image.width;
-      final height = image.height;
+      final w = image.width;
+      final h = image.height;
       final bgra = image.planes[0].bytes;
 
-      final img0 = imglib.Image.fromBytes(
-        width: width,
-        height: height,
+      final src = imglib.Image.fromBytes(
+        width: w,
+        height: h,
         bytes: bgra.buffer,
         order: imglib.ChannelOrder.bgra,
       );
 
-      // cập nhật kích thước ảnh gửi lên ROS
-      _sentWidth = img0.width;
-      _sentHeight = img0.height;
+      final resized = imglib.copyResize(
+        src,
+        width: kDetW,
+        height: kDetH,
+        interpolation: imglib.Interpolation.average,
+      );
 
-      final jpg = imglib.encodeJpg(img0, quality: 85);
+      final jpg = imglib.encodeJpg(resized, quality: 85);
       return Uint8List.fromList(jpg);
-    } catch (_) {
+    } catch (e) {
+      debugPrint('Resize/JPEG error: $e');
       return null;
     }
   }
@@ -204,9 +220,9 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   @override
   void dispose() {
     try {
-      _cameraController?.stopImageStream();
+      _cam?.stopImageStream();
     } catch (_) {}
-    _cameraController?.dispose();
+    _cam?.dispose();
     _ros.disconnect();
     super.dispose();
   }
@@ -216,31 +232,33 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
     final connected = _ros.isConnected;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('ROS Video Stream')),
+      appBar: AppBar(
+        title: const Text('ROS Video Stream'),
+      ),
       body: SafeArea(
         child: Column(
           children: [
+            // status
             Padding(
               padding: const EdgeInsets.all(8),
               child: Row(
                 children: [
                   Container(
-                    padding:
-                    const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                    padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
                     decoration: BoxDecoration(
                       color: Colors.black54,
                       borderRadius: BorderRadius.circular(4),
                     ),
                     child: Text(
                       connected ? _status : 'Disconnected',
-                      style:
-                      const TextStyle(color: Colors.white, fontSize: 12),
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
                     ),
                   ),
                 ],
               ),
             ),
             const SizedBox(height: 8),
+
             Expanded(
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
@@ -250,17 +268,14 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                       ? Stack(
                     fit: StackFit.expand,
                     children: [
-                      // CameraPreview thực tế là COVER (lấp đầy và crop)
-                      CameraPreview(_cameraController!),
+                      // CameraPreview thường là "cover"
+                      // Nhưng bbox ta vẽ theo hệ 640x640 -> ta sẽ tự map theo cover ngay trong painter.
+                      CameraPreview(_cam!),
 
-                      if (_stableDetections != null &&
-                          _sentWidth != null &&
-                          _sentHeight != null)
+                      if (_stableDetections != null)
                         CustomPaint(
-                          painter: _DetectionPainterCover(
+                          painter: _Painter640Cover(
                             detections: _stableDetections!,
-                            sentWidth: _sentWidth!,
-                            sentHeight: _sentHeight!,
                           ),
                         ),
                     ],
@@ -281,41 +296,24 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   }
 }
 
-/// ✅ Painter dùng COVER mapping (max scale) để khớp CameraPreview
-class _DetectionPainterCover extends CustomPainter {
+/// Painter: bbox thuộc hệ 640x640, vẽ lên preview theo kiểu COVER để khớp CameraPreview.
+class _Painter640Cover extends CustomPainter {
   final Map<String, dynamic> detections;
-  final int sentWidth;
-  final int sentHeight;
+  _Painter640Cover({required this.detections});
 
-  _DetectionPainterCover({
-    required this.detections,
-    required this.sentWidth,
-    required this.sentHeight,
-  });
+  static const double imgW = 640.0;
+  static const double imgH = 640.0;
 
   @override
   void paint(Canvas canvas, Size size) {
     final dets = detections['detections'];
     if (dets is! List || dets.isEmpty) return;
 
-    // Ưu tiên size từ JSON (ROS trả về); fallback sentWidth/sentHeight
-    double imgW = sentWidth.toDouble();
-    double imgH = sentHeight.toDouble();
+    // CameraPreview = cover => scale = max
+    final scale = (size.width / imgW > size.height / imgH)
+        ? (size.width / imgW)
+        : (size.height / imgH);
 
-    final imgInfo = detections['image'];
-    if (imgInfo is Map) {
-      final w = imgInfo['width'];
-      final h = imgInfo['height'];
-      if (w is num && h is num && w > 0 && h > 0) {
-        imgW = w.toDouble();
-        imgH = h.toDouble();
-      }
-    }
-
-    // COVER scale (khác contain): max -> lấp đầy, crop mép
-    final scale = math.max(size.width / imgW, size.height / imgH);
-
-    // offset sẽ thường âm hoặc dương tùy crop
     final offsetX = (size.width - imgW * scale) / 2.0;
     final offsetY = (size.height - imgH * scale) / 2.0;
 
@@ -331,13 +329,11 @@ class _DetectionPainterCover extends CustomPainter {
     for (final raw in dets) {
       if (raw is! Map) continue;
 
-      final bbox =
-      (raw['bbox'] as List?)?.map((e) => (e as num).toDouble()).toList();
+      final bbox = (raw['bbox'] as List?)?.map((e) => (e as num).toDouble()).toList();
       if (bbox == null || bbox.length != 4) continue;
 
       final cls = (raw['cls'] ?? '').toString();
-      final score =
-      (raw['score'] is num) ? (raw['score'] as num).toDouble() : 0.0;
+      final score = (raw['score'] is num) ? (raw['score'] as num).toDouble() : 0.0;
 
       final x1 = bbox[0] * scale + offsetX;
       final y1 = bbox[1] * scale + offsetY;
@@ -347,14 +343,10 @@ class _DetectionPainterCover extends CustomPainter {
       canvas.drawRect(Rect.fromLTRB(x1, y1, x2, y2), rectPaint);
 
       final text = '$cls ${(score * 100).toStringAsFixed(1)}%';
-
       final tp = TextPainter(
         text: TextSpan(
           text: text,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 12,
-          ),
+          style: const TextStyle(color: Colors.white, fontSize: 12),
         ),
         textDirection: TextDirection.ltr,
       )..layout();
@@ -372,9 +364,7 @@ class _DetectionPainterCover extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _DetectionPainterCover oldDelegate) {
-    return oldDelegate.detections != detections ||
-        oldDelegate.sentWidth != sentWidth ||
-        oldDelegate.sentHeight != sentHeight;
+  bool shouldRepaint(covariant _Painter640Cover oldDelegate) {
+    return oldDelegate.detections != detections;
   }
 }
