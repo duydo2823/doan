@@ -7,11 +7,11 @@ import 'package:image/image.dart' as imglib;
 
 import '../services/rosbridge_client.dart';
 
-// Sửa IP cho đúng với máy ROS của bạn
+// ====== SỬA IP CHO ĐÚNG MÁY ROS ======
 const String ROS_IP = '172.20.10.3';
 const int ROSBRIDGE_PORT = 9090;
 
-/// Chuẩn hoá tên lớp bệnh cho đẹp
+// ====== Chuẩn hoá tên lớp bệnh ======
 String normalizeDiseaseKey(String raw) {
   final s = raw.trim();
   final lower = s.toLowerCase();
@@ -21,7 +21,6 @@ String normalizeDiseaseKey(String raw) {
   if (lower.contains('phoma')) return 'Phoma';
   if (lower.contains('rust')) return 'Rust';
   if (lower.contains('healthy') || lower.contains('normal')) return 'Healthy';
-
   return s;
 }
 
@@ -40,13 +39,11 @@ Map<String, dynamic> normalizeDetectionsJson(Map<String, dynamic> src) {
       return e;
     }).toList();
   }
-
   return map;
 }
 
 class VideoStreamPage extends StatefulWidget {
   static const routeName = '/video-stream';
-
   const VideoStreamPage({super.key});
 
   @override
@@ -66,17 +63,21 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   DateTime? _lastSent;
   final Duration _minInterval = const Duration(milliseconds: 200);
 
-  // Kích thước ảnh gốc (lúc gửi lên ROS)
-  int? _srcWidth;
-  int? _srcHeight;
+  // Kích thước ảnh THỰC SỰ đã gửi lên ROS (sau khi xoay)
+  int? _sentWidth;
+  int? _sentHeight;
 
-  // Detections mới nhất từ ROS
+  // Detections raw
   Map<String, dynamic>? _latestDetections;
 
-  // Detections đã “làm mượt” (giữ lại vài frame nếu YOLO bị miss)
+  // Detections ổn định (giữ box cũ để đỡ chớp)
   Map<String, dynamic>? _stableDetections;
   int _missingCount = 0;
-  final int _maxMissingHold = 3; // giữ box cũ tối đa 3 lần cập nhật trống
+  final int _maxMissingHold = 3;
+
+  // iOS: thường cần xoay 90 để khớp preview portrait.
+  // Nếu bạn thấy ngược hướng (bbox lệch kiểu đối xứng), đổi 90 -> 270.
+  final int _rotateAngle = 90;
 
   @override
   void initState() {
@@ -89,6 +90,14 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
       onDetections: (m) {
         final norm = normalizeDetectionsJson(m);
         _updateDetections(norm);
+
+        // Debug nhanh: xem kích thước ảnh trong JSON ROS trả về
+        final img = norm['image'];
+        if (img is Map) {
+          final w = img['width'];
+          final h = img['height'];
+          debugPrint('DET image size: ${w}x$h  sent=${_sentWidth}x$_sentHeight');
+        }
       },
       onAnnotatedFrame: null,
     );
@@ -101,20 +110,16 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
 
     final list = det['detections'];
     if (list is List && list.isNotEmpty) {
-      // Có detect → reset giữ, cập nhật stableDetections
       _stableDetections = det;
       _missingCount = 0;
     } else {
-      // Không detect → giữ lại bbox cũ thêm vài nhịp để đỡ chớp
       _missingCount += 1;
       if (_missingCount > _maxMissingHold) {
         _stableDetections = det; // thật sự trống
       }
     }
 
-    if (mounted) {
-      setState(() {});
-    }
+    if (mounted) setState(() {});
   }
 
   Future<void> _initAll() async {
@@ -124,8 +129,8 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
 
   Future<void> _initCameraAndStream() async {
     try {
-      final cameras = await availableCameras();
-      if (cameras.isEmpty) {
+      final cams = await availableCameras();
+      if (cams.isEmpty) {
         setState(() {
           _cameraReady = false;
           _status = 'Không tìm thấy camera.';
@@ -133,9 +138,9 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         return;
       }
 
-      final camera = cameras.first;
+      final cam = cams.first;
       _cameraController = CameraController(
-        camera,
+        cam,
         ResolutionPreset.medium,
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.bgra8888,
@@ -163,10 +168,8 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
     if (_cameraController == null) return;
 
     _lastSent = DateTime.now();
-    _cameraController!.startImageStream((image) async {
-      _srcWidth = image.width;
-      _srcHeight = image.height;
 
+    _cameraController!.startImageStream((image) async {
       final now = DateTime.now();
       if (_lastSent != null && now.difference(_lastSent!) < _minInterval) {
         return;
@@ -176,7 +179,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
       _lastSent = now;
       _sendingFrame = true;
       try {
-        final jpeg = _convertCameraImageToJpeg(image);
+        final jpeg = _convertCameraImageToJpegRotated(image);
         if (jpeg != null) {
           _ros.publishJpeg(jpeg);
         }
@@ -186,20 +189,29 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
     });
   }
 
-  Uint8List? _convertCameraImageToJpeg(CameraImage image) {
+  /// ====== FIX CHÍNH: XOAY ẢNH TRƯỚC KHI GỬI ======
+  /// iOS CameraPreview đang hiển thị ảnh đã xoay portrait.
+  /// Nếu ta gửi ảnh chưa xoay (landscape) cho ROS thì bbox trả về lệch.
+  Uint8List? _convertCameraImageToJpegRotated(CameraImage image) {
     try {
       final width = image.width;
       final height = image.height;
       final bgra = image.planes[0].bytes;
 
-      final img = imglib.Image.fromBytes(
+      final img0 = imglib.Image.fromBytes(
         width: width,
         height: height,
         bytes: bgra.buffer,
         order: imglib.ChannelOrder.bgra,
       );
 
-      final jpg = imglib.encodeJpg(img, quality: 85);
+      final rotated = imglib.copyRotate(img0, angle: _rotateAngle);
+
+      // Cập nhật kích thước ảnh đã gửi (quan trọng cho painter)
+      _sentWidth = rotated.width;
+      _sentHeight = rotated.height;
+
+      final jpg = imglib.encodeJpg(rotated, quality: 85);
       return Uint8List.fromList(jpg);
     } catch (_) {
       return null;
@@ -218,18 +230,16 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
 
   @override
   Widget build(BuildContext context) {
-    final bool connected = _ros.isConnected;
+    final connected = _ros.isConnected;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('ROS Video Stream'),
-      ),
+      appBar: AppBar(title: const Text('ROS Video Stream')),
       body: SafeArea(
         child: Column(
           children: [
-            // Status bar
+            // Status
             Padding(
-              padding: const EdgeInsets.all(8.0),
+              padding: const EdgeInsets.all(8),
               child: Row(
                 children: [
                   Container(
@@ -249,33 +259,29 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
               ),
             ),
             const SizedBox(height: 8),
+
             Expanded(
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
                 child: Container(
                   color: Colors.black,
                   child: _cameraReady
-                      ? LayoutBuilder(
-                    builder: (context, constraints) {
-                      return Stack(
-                        fit: StackFit.expand,
-                        children: [
-                          CameraPreview(_cameraController!),
+                      ? Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      CameraPreview(_cameraController!),
 
-                          // Overlay bbox đã làm mượt
-                          if (_stableDetections != null &&
-                              _srcWidth != null &&
-                              _srcHeight != null)
-                            CustomPaint(
-                              painter: _LiveDetectionPainter(
-                                detections: _stableDetections!,
-                                srcWidth: _srcWidth!,
-                                srcHeight: _srcHeight!,
-                              ),
-                            ),
-                        ],
-                      );
-                    },
+                      if (_stableDetections != null &&
+                          _sentWidth != null &&
+                          _sentHeight != null)
+                        CustomPaint(
+                          painter: _DetectionPainterFixed(
+                            detections: _stableDetections!,
+                            sentWidth: _sentWidth!,
+                            sentHeight: _sentHeight!,
+                          ),
+                        ),
+                    ],
                   )
                       : const Center(
                     child: Text(
@@ -293,16 +299,17 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   }
 }
 
-/// Painter vẽ bbox, ĐÃ TÍNH ĐÚNG SCALE + PADDING (HẾT LỆCH)
-class _LiveDetectionPainter extends CustomPainter {
+/// ====== Painter FIX LỆCH: SCALE theo contain + offset ======
+/// Bbox từ ROS tính theo ảnh đã gửi (rotated) => sentWidth/sentHeight.
+class _DetectionPainterFixed extends CustomPainter {
   final Map<String, dynamic> detections;
-  final int srcWidth;
-  final int srcHeight;
+  final int sentWidth;
+  final int sentHeight;
 
-  _LiveDetectionPainter({
+  _DetectionPainterFixed({
     required this.detections,
-    required this.srcWidth,
-    required this.srcHeight,
+    required this.sentWidth,
+    required this.sentHeight,
   });
 
   @override
@@ -310,9 +317,10 @@ class _LiveDetectionPainter extends CustomPainter {
     final dets = detections['detections'];
     if (dets is! List || dets.isEmpty) return;
 
-    // Kích thước ảnh mà YOLO dùng (từ JSON). Nếu không có thì dùng srcWidth/Height.
-    double imgW = srcWidth.toDouble();
-    double imgH = srcHeight.toDouble();
+    // Ưu tiên kích thước ảnh trong JSON (ROS trả về)
+    double imgW = sentWidth.toDouble();
+    double imgH = sentHeight.toDouble();
+
     final imgInfo = detections['image'];
     if (imgInfo is Map) {
       final w = imgInfo['width'];
@@ -323,9 +331,7 @@ class _LiveDetectionPainter extends CustomPainter {
       }
     }
 
-    // Tính scale và padding để map ảnh gốc -> preview:
-    // scale = min(width/imgW, height/imgH) -> giữ nguyên tỉ lệ, không méo
-    // offsetX/Y là khoảng viền đen hai bên (letterbox) nếu có.
+    // Scale kiểu contain + offset (bù viền đen)
     final scale = math.min(size.width / imgW, size.height / imgH);
     final offsetX = (size.width - imgW * scale) / 2.0;
     final offsetY = (size.height - imgH * scale) / 2.0;
@@ -383,9 +389,9 @@ class _LiveDetectionPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _LiveDetectionPainter oldDelegate) {
+  bool shouldRepaint(covariant _DetectionPainterFixed oldDelegate) {
     return oldDelegate.detections != detections ||
-        oldDelegate.srcWidth != srcWidth ||
-        oldDelegate.srcHeight != srcHeight;
+        oldDelegate.sentWidth != sentWidth ||
+        oldDelegate.sentHeight != sentHeight;
   }
 }
