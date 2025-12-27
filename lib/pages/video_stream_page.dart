@@ -1,10 +1,4 @@
-// lib/pages/video_stream_page.dart
-//
-// ✅ Stream camera -> resize 640x640 -> JPEG -> gửi ROS
-// ✅ Nhận detections_json (bbox theo 640x640) -> vẽ overlay KHÔNG LỆCH
-// ✅ Giữ bbox cũ vài nhịp để đỡ chớp (hold)
-// ✅ Throttle gửi frame để ROS chạy kịp
-
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
@@ -13,14 +7,14 @@ import 'package:image/image.dart' as imglib;
 
 import '../services/rosbridge_client.dart';
 
-// ======= SỬA IP/PORT ROS CỦA BẠN Ở ĐÂY =======
+// Sửa IP/PORT ROS cho đúng máy của bạn
 const String ROS_IP = '172.20.10.3';
 const int ROSBRIDGE_PORT = 9090;
 
-// ======= normalize tên class =======
 String normalizeDiseaseKey(String raw) {
   final s = raw.trim();
   final lower = s.toLowerCase();
+
   if (lower.contains('cercospora')) return 'Cercospora';
   if (lower.contains('miner')) return 'Miner';
   if (lower.contains('phoma')) return 'Phoma';
@@ -32,6 +26,7 @@ String normalizeDiseaseKey(String raw) {
 Map<String, dynamic> normalizeDetectionsJson(Map<String, dynamic> src) {
   final map = Map<String, dynamic>.from(src);
   final dets = map['detections'];
+
   if (dets is List) {
     map['detections'] = dets.map((e) {
       if (e is Map) {
@@ -43,6 +38,13 @@ Map<String, dynamic> normalizeDetectionsJson(Map<String, dynamic> src) {
     }).toList();
   }
   return map;
+}
+
+class _JpegFrame {
+  final Uint8List jpeg;
+  final int w;
+  final int h;
+  const _JpegFrame(this.jpeg, this.w, this.h);
 }
 
 class VideoStreamPage extends StatefulWidget {
@@ -57,24 +59,28 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   late final RosbridgeClient _ros;
 
   String _status = 'Đang kết nối ROS...';
-  bool _connected = false;
 
   CameraController? _cam;
   bool _cameraReady = false;
 
-  // ======= stream control =======
+  // Throttle gửi frame (giảm để YOLO kịp chạy)
   bool _sending = false;
   DateTime? _lastSent;
-  final Duration _minInterval = const Duration(milliseconds: 220); // 180-300ms tuỳ máy
+  final Duration _minInterval = const Duration(milliseconds: 220);
 
-  // ======= detections =======
+  // Frame jpeg cuối cùng (CHÍNH frame đã gửi ROS) -> hiển thị trên UI
+  Uint8List? _lastFrameJpeg;
+  int _frameW = 0;
+  int _frameH = 0;
+
+  // Detections ổn định (giữ lại vài nhịp nếu YOLO miss)
   Map<String, dynamic>? _stableDetections;
   int _missingCount = 0;
   final int _maxMissingHold = 3;
 
-  // ======= hard-fixed size =======
-  static const int kDetW = 640;
-  static const int kDetH = 640;
+  // Tối ưu băng thông: có thể giảm kích thước ảnh gửi mà vẫn giữ tỉ lệ
+  // (Không ép vuông. Nếu bạn muốn giữ nguyên tuyệt đối, set = 0)
+  static const int _maxSendWidth = 960;
 
   @override
   void initState() {
@@ -89,8 +95,8 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
       onAnnotatedImage: (_) {},
       onDetections: (m) {
         final norm = normalizeDetectionsJson(m);
-
         final dets = norm['detections'];
+
         if (dets is List && dets.isNotEmpty) {
           _stableDetections = norm;
           _missingCount = 0;
@@ -101,10 +107,12 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
           }
         }
 
-        // debug size (nếu ROS trả image.width/height)
+        // Debug nhanh size (nếu ROS gửi)
         final img = norm['image'];
         if (img is Map) {
-          debugPrint('DET(image)=${img['width']}x${img['height']} (expect 640x640)');
+          final w = img['width'];
+          final h = img['height'];
+          debugPrint('DET(image)=$w x $h | FRAME=$_frameW x $_frameH');
         }
 
         if (mounted) setState(() {});
@@ -116,12 +124,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   }
 
   Future<void> _initAll() async {
-    try {
-      await _ros.connect();
-      if (!mounted) return;
-      setState(() => _connected = _ros.isConnected);
-    } catch (_) {}
-
+    await _ros.connect();
     await _initCamera();
   }
 
@@ -137,7 +140,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         return;
       }
 
-      // ưu tiên camera sau nếu có
+      // Ưu tiên camera sau
       final back = cams.where((c) => c.lensDirection == CameraLensDirection.back).toList();
       final camDesc = back.isNotEmpty ? back.first : cams.first;
 
@@ -176,43 +179,74 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
     _sending = true;
 
     try {
-      final jpeg = _toJpeg640(image);
-      if (jpeg != null) {
-        _ros.publishJpeg(jpeg);
-      }
-    } catch (_) {
-      // ignore
+      final converted = _cameraImageToJpegKeepAspect(image, maxWidth: _maxSendWidth);
+      if (converted == null) return;
+
+      final jpeg = converted.jpeg;
+      final w = converted.w;
+      final h = converted.h;
+
+      // lưu frame để HIỂN THỊ trên UI (cùng hệ với bbox)
+      _lastFrameJpeg = jpeg;
+      _frameW = w;
+      _frameH = h;
+
+      // gửi ROS
+      _ros.publishJpeg(jpeg);
+
+      if (mounted) setState(() {});
     } finally {
       _sending = false;
     }
   }
 
-  /// ✅ Convert BGRA camera image -> imglib.Image -> resize 640x640 -> JPEG
-  /// Lưu ý: resize này là "bóp" ảnh (không giữ tỉ lệ) để đồng hệ toạ độ 640x640.
-  Uint8List? _toJpeg640(CameraImage image) {
+  /// Convert BGRA8888 CameraImage -> JPEG, GIỮ TỈ LỆ.
+  /// - Có xử lý stride/bytesPerRow để tránh méo ảnh ngầm.
+  /// - Có thể downscale theo maxWidth (giữ tỉ lệ) để giảm load.
+  _JpegFrame? _cameraImageToJpegKeepAspect(
+      CameraImage image, {
+        required int maxWidth,
+      }) {
     try {
       final w = image.width;
       final h = image.height;
-      final bgra = image.planes[0].bytes;
 
-      final src = imglib.Image.fromBytes(
-        width: w,
-        height: h,
-        bytes: bgra.buffer,
-        order: imglib.ChannelOrder.bgra,
-      );
+      final plane = image.planes[0];
+      final bytes = plane.bytes;
+      final bytesPerRow = plane.bytesPerRow;
 
-      final resized = imglib.copyResize(
-        src,
-        width: kDetW,
-        height: kDetH,
-        interpolation: imglib.Interpolation.average,
-      );
+      // Tạo ảnh và copy pixel theo stride
+      final img = imglib.Image(width: w, height: h);
+      for (int y = 0; y < h; y++) {
+        final rowStart = y * bytesPerRow;
+        for (int x = 0; x < w; x++) {
+          final i = rowStart + x * 4;
+          final b = bytes[i];
+          final g = bytes[i + 1];
+          final r = bytes[i + 2];
+          final a = bytes[i + 3];
+          img.setPixelRgba(x, y, r, g, b, a);
+        }
+      }
 
-      final jpg = imglib.encodeJpg(resized, quality: 85);
-      return Uint8List.fromList(jpg);
+      imglib.Image out = img;
+
+      // Downscale (giữ tỉ lệ) nếu cần
+      if (maxWidth > 0 && out.width > maxWidth) {
+        final newW = maxWidth;
+        final newH = (out.height * (maxWidth / out.width)).round();
+        out = imglib.copyResize(
+          out,
+          width: newW,
+          height: newH,
+          interpolation: imglib.Interpolation.average,
+        );
+      }
+
+      final jpg = imglib.encodeJpg(out, quality: 85);
+      return _JpegFrame(Uint8List.fromList(jpg), out.width, out.height);
     } catch (e) {
-      debugPrint('Resize/JPEG error: $e');
+      debugPrint('Convert frame error: $e');
       return null;
     }
   }
@@ -232,13 +266,10 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
     final connected = _ros.isConnected;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('ROS Video Stream'),
-      ),
+      appBar: AppBar(title: const Text('ROS Video Stream')),
       body: SafeArea(
         child: Column(
           children: [
-            // status
             Padding(
               padding: const EdgeInsets.all(8),
               child: Row(
@@ -254,11 +285,16 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                       style: const TextStyle(color: Colors.white, fontSize: 12),
                     ),
                   ),
+                  const SizedBox(width: 8),
+                  if (_frameW > 0 && _frameH > 0)
+                    Text(
+                      'FRAME=$_frameW×$_frameH',
+                      style: const TextStyle(fontSize: 12),
+                    ),
                 ],
               ),
             ),
             const SizedBox(height: 8),
-
             Expanded(
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
@@ -268,23 +304,30 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                       ? Stack(
                     fit: StackFit.expand,
                     children: [
-                      // CameraPreview thường là "cover"
-                      // Nhưng bbox ta vẽ theo hệ 640x640 -> ta sẽ tự map theo cover ngay trong painter.
-                      CameraPreview(_cam!),
+                      // HIỂN THỊ đúng frame đã gửi ROS -> bbox khớp 100%
+                      if (_lastFrameJpeg != null)
+                        Image.memory(
+                          _lastFrameJpeg!,
+                          fit: BoxFit.cover,
+                          gaplessPlayback: true,
+                        )
+                      else
+                        const Center(
+                          child: Text('Đang lấy frame...', style: TextStyle(color: Colors.white)),
+                        ),
 
-                      if (_stableDetections != null)
+                      if (_stableDetections != null && _frameW > 0 && _frameH > 0)
                         CustomPaint(
-                          painter: _Painter640Cover(
+                          painter: _DetectionPainterCover(
                             detections: _stableDetections!,
+                            imgW: _frameW.toDouble(),
+                            imgH: _frameH.toDouble(),
                           ),
                         ),
                     ],
                   )
                       : const Center(
-                    child: Text(
-                      'Đang mở camera...',
-                      style: TextStyle(color: Colors.white),
-                    ),
+                    child: Text('Đang mở camera...', style: TextStyle(color: Colors.white)),
                   ),
                 ),
               ),
@@ -296,24 +339,24 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   }
 }
 
-/// Painter: bbox thuộc hệ 640x640, vẽ lên preview theo kiểu COVER để khớp CameraPreview.
-class _Painter640Cover extends CustomPainter {
+/// Vẽ bbox theo kiểu COVER để khớp Image.memory fit=cover.
+class _DetectionPainterCover extends CustomPainter {
   final Map<String, dynamic> detections;
-  _Painter640Cover({required this.detections});
+  final double imgW;
+  final double imgH;
 
-  static const double imgW = 640.0;
-  static const double imgH = 640.0;
+  _DetectionPainterCover({
+    required this.detections,
+    required this.imgW,
+    required this.imgH,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
     final dets = detections['detections'];
     if (dets is! List || dets.isEmpty) return;
 
-    // CameraPreview = cover => scale = max
-    final scale = (size.width / imgW > size.height / imgH)
-        ? (size.width / imgW)
-        : (size.height / imgH);
-
+    final scale = math.max(size.width / imgW, size.height / imgH);
     final offsetX = (size.width - imgW * scale) / 2.0;
     final offsetY = (size.height - imgH * scale) / 2.0;
 
@@ -364,7 +407,7 @@ class _Painter640Cover extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _Painter640Cover oldDelegate) {
-    return oldDelegate.detections != detections;
+  bool shouldRepaint(covariant _DetectionPainterCover oldDelegate) {
+    return oldDelegate.detections != detections || oldDelegate.imgW != imgW || oldDelegate.imgH != imgH;
   }
 }
