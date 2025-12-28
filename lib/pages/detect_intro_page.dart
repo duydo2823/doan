@@ -78,6 +78,13 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   int _reqId = 0;
   int _activeReqId = 0;
 
+  // ===== RESEND 1 LẦN nếu chưa nhận annotated =====
+  Timer? _resendTimer;
+  bool _resentOnce = false;
+  Uint8List? _lastSentBytes;
+  int _lastSentReqId = 0;
+  // =============================================
+
   String get _rosUrl => 'ws://$ROS_IP:$ROSBRIDGE_PORT';
 
   @override
@@ -95,6 +102,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
           });
         }
         _annotatedTimeout?.cancel();
+        _resendTimer?.cancel(); // ✅ nhận rồi thì khỏi resend
       },
       onDetections: (m) {
         if (!mounted) return;
@@ -107,6 +115,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   void dispose() {
     _stopHeartbeat();
     _annotatedTimeout?.cancel();
+    _resendTimer?.cancel(); // ✅ thêm
     _ros.disconnect();
     super.dispose();
   }
@@ -142,6 +151,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   void _disconnect() {
     _stopHeartbeat();
     _annotatedTimeout?.cancel();
+    _resendTimer?.cancel(); // ✅ thêm
     _ros.disconnect();
     setState(() {
       _lastPingOk = false;
@@ -160,17 +170,12 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       setState(() {
         _lastPingOk = ok;
         _lastRttMs = rtt;
-        _status = ok
-            ? 'ROS OK • RTT ${rtt ?? '-'}ms'
-            : 'Ping ROS thất bại';
+        _status = ok ? 'ROS OK • RTT ${rtt ?? '-'}ms' : 'Ping ROS thất bại';
       });
 
       if (!silent && mounted) {
-        final msg = ok
-            ? 'ROS OK • RTT ${rtt ?? '-'}ms'
-            : 'Không thể ping ROS (rosbridge chưa ready?)';
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(msg)));
+        final msg = ok ? 'ROS OK • RTT ${rtt ?? '-'}ms' : 'Không thể ping ROS (rosbridge chưa ready?)';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
       }
     } catch (e) {
       setState(() {
@@ -183,21 +188,45 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
   // ================= GỬI ẢNH LÊN ROS =================
 
-  void _startWaitAnnotated({required int reqId}) {
+  void _startWaitAnnotated({required int reqId, Uint8List? sentBytes}) {
     _annotatedTimeout?.cancel();
+    _resendTimer?.cancel();
+
     setState(() {
       _waitingAnnotated = true;
       _activeReqId = reqId;
     });
 
-    // Nếu sau 1.2s chưa có annotated -> fallback
-    _annotatedTimeout = Timer(const Duration(milliseconds: 1200), () {
+    // Lưu bytes để có thể resend 1 lần nếu rớt frame đầu
+    _lastSentBytes = sentBytes;
+    _resentOnce = false;
+    _lastSentReqId = reqId;
+
+    // ✅ Sau 1.5s nếu vẫn chưa có annotated -> resend đúng 1 lần
+    _resendTimer = Timer(const Duration(milliseconds: 1500), () {
       if (!mounted) return;
-      // Chỉ timeout nếu vẫn đang chờ đúng request này
-      if (_waitingAnnotated && _activeReqId == reqId) {
+
+      // chỉ resend nếu vẫn đang chờ đúng request này
+      if (!_waitingAnnotated) return;
+      if (_activeReqId != reqId) return;
+
+      if (_annotatedBytes == null && !_resentOnce && _lastSentBytes != null) {
+        _resentOnce = true;
+        _ros.publishJpeg(_lastSentBytes!);
+
+        setState(() {
+          _status = 'Chưa nhận annotated (có thể rớt frame đầu) → gửi lại 1 lần...';
+        });
+      }
+    });
+
+    // Nếu sau 3.5s vẫn chưa có annotated -> stop wait
+    _annotatedTimeout = Timer(const Duration(milliseconds: 3500), () {
+      if (!mounted) return;
+      if (_waitingAnnotated && _activeReqId == reqId && _annotatedBytes == null) {
         setState(() {
           _waitingAnnotated = false;
-          _status = 'ROS chưa trả ảnh annotated (frame đầu có thể bị rớt). Hãy thử lại.';
+          _status = 'ROS chưa trả ảnh annotated (có thể rớt frame đầu). Bạn thử chụp/chọn lại.';
         });
       }
     });
@@ -227,9 +256,12 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
         _status = 'Đang gửi ảnh chụp lên ROS...';
       });
 
-      _startWaitAnnotated(reqId: _reqId);
-
       final bytes = await photo.readAsBytes();
+
+      // ✅ Start waiting & setup resend
+      _startWaitAnnotated(reqId: _reqId, sentBytes: bytes);
+
+      // send lần 1
       _ros.publishJpeg(bytes);
 
       setState(() {
@@ -266,9 +298,12 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
         _status = 'Đang gửi ảnh (gallery) lên ROS...';
       });
 
-      _startWaitAnnotated(reqId: _reqId);
-
       final bytes = await file.readAsBytes();
+
+      // ✅ Start waiting & setup resend
+      _startWaitAnnotated(reqId: _reqId, sentBytes: bytes);
+
+      // send lần 1
       _ros.publishJpeg(bytes);
 
       setState(() {
@@ -350,14 +385,10 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                             Text(_status, style: const TextStyle(fontSize: 13)),
                             const SizedBox(height: 4),
                             Text(
-                              _lastPingOk
-                                  ? 'ROS OK • RTT: ${_lastRttMs ?? '-'}ms'
-                                  : 'Chưa ping được ROS',
+                              _lastPingOk ? 'ROS OK • RTT: ${_lastRttMs ?? '-'}ms' : 'Chưa ping được ROS',
                               style: TextStyle(
                                 fontSize: 12,
-                                color: _lastPingOk
-                                    ? Colors.green
-                                    : Colors.redAccent,
+                                color: _lastPingOk ? Colors.green : Colors.redAccent,
                               ),
                             ),
                           ],
@@ -375,8 +406,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                           const SizedBox(height: 4),
                           OutlinedButton(
                             onPressed: connected ? () => _doPing() : null,
-                            child: const Text('Ping',
-                                style: TextStyle(fontSize: 12)),
+                            child: const Text('Ping', style: TextStyle(fontSize: 12)),
                           ),
                         ],
                       ),
