@@ -311,7 +311,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     }
 
     final connected = _ros.isConnected;
-    final canShoot = _canSend;
+    final canShoot = connected && _lastPingOk && _ros.isRosReady;
 
     return Scaffold(
       appBar: AppBar(
