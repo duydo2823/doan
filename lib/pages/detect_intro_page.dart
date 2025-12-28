@@ -14,44 +14,20 @@ import 'video_stream_page.dart';
 const String ROS_IP = '172.20.10.3';
 const int ROSBRIDGE_PORT = 9090;
 
-/// Chuẩn hoá tên lớp bệnh từ ROS về key chuẩn để app dùng thống nhất
 String normalizeDiseaseKey(String raw) {
   final s = raw.trim();
   final lower = s.toLowerCase();
-
-  if (lower.contains('cercospora')) return 'Cercospora';
+  if (lower.contains('cerc')) return 'Cercospora';
   if (lower.contains('miner')) return 'Miner';
   if (lower.contains('phoma')) return 'Phoma';
   if (lower.contains('rust')) return 'Rust';
-  if (lower.contains('healthy') || lower.contains('normal')) return 'Healthy';
-
-  return s;
-}
-
-/// Chuẩn hoá trường 'cls' trong detections_json để ResultPage dùng luôn
-Map<String, dynamic> normalizeDetectionsJson(Map<String, dynamic> src) {
-  final map = Map<String, dynamic>.from(src);
-  final dets = map['detections'];
-
-  if (dets is List) {
-    map['detections'] = dets.map((e) {
-      if (e is Map) {
-        final mm = Map<String, dynamic>.from(e);
-        final rawCls = (mm['cls'] ?? '').toString();
-        mm['cls'] = normalizeDiseaseKey(rawCls);
-        return mm;
-      }
-      return e;
-    }).toList();
-  }
-
-  return map;
+  if (lower.contains('healthy')) return 'Healthy';
+  return raw.trim();
 }
 
 class DetectIntroPage extends StatefulWidget {
-  static const routeName = '/detect-intro';
-
   const DetectIntroPage({super.key});
+  static const routeName = '/detect';
 
   @override
   State<DetectIntroPage> createState() => _DetectIntroPageState();
@@ -60,6 +36,8 @@ class DetectIntroPage extends StatefulWidget {
 class _DetectIntroPageState extends State<DetectIntroPage> {
   final ImagePicker _picker = ImagePicker();
   late final RosbridgeClient _ros;
+
+  String get _rosUrl => 'ws://$ROS_IP:$ROSBRIDGE_PORT';
 
   String _status = 'Chưa kết nối ROS';
   bool _lastPingOk = false;
@@ -70,37 +48,57 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   Uint8List? _annotatedBytes;
   Map<String, dynamic>? _detections;
 
-  // ---- NEW: đợi annotated để tránh “ảnh đầu không bbox”
+  // ====== TRIỆT ĐỂ: match theo request-id ======
+  int _reqId = 0;
+  String? _activeFrameId;
+
   bool _waitingAnnotated = false;
   Timer? _annotatedTimeout;
-
-  // request id để tránh annotated cũ nhảy vào ảnh mới (race)
-  int _reqId = 0;
-  int _activeReqId = 0;
-
-  String get _rosUrl => 'ws://$ROS_IP:$ROSBRIDGE_PORT';
 
   @override
   void initState() {
     super.initState();
+
     _ros = RosbridgeClient(
       url: _rosUrl,
-      onStatus: (s) => setState(() => _status = s),
-      onAnnotatedImage: (jpeg) {
-        // Nếu đang chờ annotated cho request hiện tại -> nhận và stop wait
-        if (mounted) {
-          setState(() {
-            _annotatedBytes = jpeg;
-            _waitingAnnotated = false;
-          });
-        }
-        _annotatedTimeout?.cancel();
-      },
-      onDetections: (m) {
+      onStatus: (s) {
         if (!mounted) return;
-        setState(() => _detections = normalizeDetectionsJson(m));
+        setState(() => _status = s);
+      },
+
+      // ====== annotated: chỉ nhận khi frameId khớp request đang chờ ======
+      onAnnotatedImage: (jpeg, frameId) {
+        if (!mounted) return;
+
+        // ignore nếu không khớp (bbox về trễ của request cũ)
+        if (_activeFrameId != null && frameId != _activeFrameId) {
+          return;
+        }
+
+        _annotatedTimeout?.cancel();
+        setState(() {
+          _annotatedBytes = jpeg;
+          _waitingAnnotated = false;
+          _status = 'Đã nhận ảnh annotated (bbox).';
+        });
+      },
+
+      // ====== detections: cũng match request_id ======
+      onDetections: (m, requestId) {
+        if (!mounted) return;
+
+        if (_activeFrameId != null && requestId != _activeFrameId) {
+          return;
+        }
+
+        // bạn có thể normalize class_name nếu muốn
+        setState(() {
+          _detections = m;
+        });
       },
     );
+
+    _connect();
   }
 
   @override
@@ -110,8 +108,6 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     _ros.disconnect();
     super.dispose();
   }
-
-  // ================= ROS CONNECT / PING =================
 
   void _startHeartbeat() {
     _hb?.cancel();
@@ -129,7 +125,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     try {
       await _ros.connect();
 
-      // ✅ Warm-up: chờ rosbridge ổn định rồi ping 2 lần
+      // Warm-up rosbridge ổn định (giảm “lần đầu lỡ subscribe”)
       await Future.delayed(const Duration(milliseconds: 350));
       await _doPing(silent: true);
       await Future.delayed(const Duration(milliseconds: 250));
@@ -148,56 +144,52 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       _lastRttMs = null;
       _status = 'Đã ngắt kết nối ROS';
       _waitingAnnotated = false;
+      _activeFrameId = null;
     });
   }
 
   Future<void> _doPing({bool silent = false}) async {
     try {
-      final result = await _ros.ping();
-      final ok = result.$1;
-      final rtt = result.$2;
+      final (ok, rtt) = await _ros.ping();
+      if (!mounted) return;
 
       setState(() {
         _lastPingOk = ok;
         _lastRttMs = rtt;
-        _status = ok
-            ? 'ROS OK • RTT ${rtt ?? '-'}ms'
-            : 'Ping ROS thất bại';
+        if (!silent) {
+          _status = ok ? 'ROS OK (ping ${rtt ?? '-'} ms)' : 'ROS không phản hồi';
+        }
       });
-
-      if (!silent && mounted) {
-        final msg = ok
-            ? 'ROS OK • RTT ${rtt ?? '-'}ms'
-            : 'Không thể ping ROS (rosbridge chưa ready?)';
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(msg)));
-      }
-    } catch (e) {
+    } catch (_) {
+      if (!mounted) return;
       setState(() {
         _lastPingOk = false;
         _lastRttMs = null;
-        _status = 'Lỗi ping ROS: $e';
+        if (!silent) _status = 'ROS không phản hồi';
       });
     }
   }
 
-  // ================= GỬI ẢNH LÊN ROS =================
-
-  void _startWaitAnnotated({required int reqId}) {
+  // ====== TRIỆT ĐỂ: chờ annotated theo request-id ======
+  void _startWaitAnnotated({required String frameId, required int reqIndex}) {
     _annotatedTimeout?.cancel();
+
     setState(() {
       _waitingAnnotated = true;
-      _activeReqId = reqId;
+      _activeFrameId = frameId;
     });
 
-    // Nếu sau 1.2s chưa có annotated -> fallback
-    _annotatedTimeout = Timer(const Duration(milliseconds: 1200), () {
+    // Lần đầu thường chậm hơn -> timeout lâu hơn
+    final timeoutMs = (reqIndex <= 2) ? 6500 : 3500;
+
+    _annotatedTimeout = Timer(Duration(milliseconds: timeoutMs), () {
       if (!mounted) return;
-      // Chỉ timeout nếu vẫn đang chờ đúng request này
-      if (_waitingAnnotated && _activeReqId == reqId) {
+      // Nếu vẫn đang chờ đúng request này thì stop wait (fallback)
+      if (_waitingAnnotated && _activeFrameId == frameId) {
         setState(() {
           _waitingAnnotated = false;
-          _status = 'ROS chưa trả ảnh annotated (frame đầu có thể bị rớt). Hãy thử lại.';
+          _status =
+          'Timeout chờ annotated (${timeoutMs}ms) — tạm hiển thị ảnh gốc, nhưng request vẫn hợp lệ.';
         });
       }
     });
@@ -219,6 +211,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       if (photo == null) return;
 
       _reqId++;
+      final frameId = 'req_$_reqId';
 
       setState(() {
         _captured = photo;
@@ -227,10 +220,10 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
         _status = 'Đang gửi ảnh chụp lên ROS...';
       });
 
-      _startWaitAnnotated(reqId: _reqId);
+      _startWaitAnnotated(frameId: frameId, reqIndex: _reqId);
 
       final bytes = await photo.readAsBytes();
-      _ros.publishJpeg(bytes);
+      _ros.publishJpeg(bytes, frameId: frameId);
 
       setState(() {
         _status = 'Đã gửi ảnh, chờ kết quả từ ROS...';
@@ -258,18 +251,19 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       if (file == null) return;
 
       _reqId++;
+      final frameId = 'req_$_reqId';
 
       setState(() {
         _captured = file;
         _annotatedBytes = null;
         _detections = null;
-        _status = 'Đang gửi ảnh (gallery) lên ROS...';
+        _status = 'Đang gửi ảnh thư viện lên ROS...';
       });
 
-      _startWaitAnnotated(reqId: _reqId);
+      _startWaitAnnotated(frameId: frameId, reqIndex: _reqId);
 
       final bytes = await file.readAsBytes();
-      _ros.publishJpeg(bytes);
+      _ros.publishJpeg(bytes, frameId: frameId);
 
       setState(() {
         _status = 'Đã gửi ảnh gallery, chờ kết quả từ ROS...';
@@ -280,12 +274,20 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   }
 
   void _openResultPage() {
+    if (_waitingAnnotated && _annotatedBytes == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Đang xử lý... đợi bbox về rồi hãy mở kết quả.')),
+      );
+      return;
+    }
+
     if (_captured == null && _annotatedBytes == null && _detections == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Chưa có dữ liệu để hiển thị')),
       );
       return;
     }
+
     Navigator.pushNamed(
       context,
       ResultPage.routeName,
@@ -293,19 +295,13 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
         'rawPath': _captured?.path,
         'annotated': _annotatedBytes,
         'detections': _detections,
+        'request_id': _activeFrameId,
       },
     );
   }
 
-  void _openStreamPage() {
-    Navigator.pushNamed(context, VideoStreamPage.routeName);
-  }
-
-  // ================= UI =================
-
   @override
   Widget build(BuildContext context) {
-    // ✅ Ưu tiên annotated, nhưng nếu đang chờ annotated thì hiển thị overlay “Đang xử lý…”
     Widget preview;
     if (_annotatedBytes != null) {
       preview = Image.memory(_annotatedBytes!, fit: BoxFit.contain);
@@ -323,13 +319,21 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Nhận diện bệnh lá cà phê'),
+        actions: [
+          IconButton(
+            tooltip: 'Xem video realtime',
+            icon: const Icon(Icons.videocam),
+            onPressed: () {
+              Navigator.pushNamed(context, VideoStreamPage.routeName);
+            },
+          )
+        ],
       ),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
             children: [
-              // Trạng thái ROS
               Card(
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
@@ -338,28 +342,28 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                   padding: const EdgeInsets.all(12),
                   child: Row(
                     children: [
-                      Icon(
-                        connected ? Icons.cloud_done : Icons.cloud_off,
-                        color: connected ? Colors.green : Colors.red,
-                      ),
-                      const SizedBox(width: 8),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(_status, style: const TextStyle(fontSize: 13)),
-                            const SizedBox(height: 4),
+                            Text(_status),
+                            const SizedBox(height: 6),
                             Text(
-                              _lastPingOk
-                                  ? 'ROS OK • RTT: ${_lastRttMs ?? '-'}ms'
-                                  : 'Chưa ping được ROS',
+                              connected
+                                  ? (_lastPingOk
+                                  ? 'ROS: OK (${_lastRttMs ?? '-'} ms)'
+                                  : 'ROS: Không phản hồi')
+                                  : 'Chưa kết nối',
                               style: TextStyle(
                                 fontSize: 12,
-                                color: _lastPingOk
-                                    ? Colors.green
-                                    : Colors.redAccent,
+                                color: _lastPingOk ? Colors.green : Colors.redAccent,
                               ),
                             ),
+                            if (_activeFrameId != null)
+                              Text(
+                                'Request: $_activeFrameId',
+                                style: const TextStyle(fontSize: 12),
+                              ),
                           ],
                         ),
                       ),
@@ -367,16 +371,12 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                         children: [
                           FilledButton(
                             onPressed: connected ? _disconnect : _connect,
-                            child: Text(
-                              connected ? 'Ngắt' : 'Kết nối',
-                              style: const TextStyle(fontSize: 12),
-                            ),
+                            child: Text(connected ? 'Ngắt' : 'Kết nối'),
                           ),
-                          const SizedBox(height: 4),
+                          const SizedBox(height: 8),
                           OutlinedButton(
-                            onPressed: connected ? () => _doPing() : null,
-                            child: const Text('Ping',
-                                style: TextStyle(fontSize: 12)),
+                            onPressed: () => _doPing(silent: false),
+                            child: const Text('Ping'),
                           ),
                         ],
                       ),
@@ -387,80 +387,65 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
               const SizedBox(height: 12),
 
-              // Ảnh preview + trạng thái “đang chờ annotated”
               Expanded(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      Container(
-                        color: Colors.black12,
-                        child: preview,
-                      ),
-                      if (_waitingAnnotated)
-                        Container(
-                          color: Colors.black.withOpacity(0.15),
+                child: Stack(
+                  children: [
+                    Center(child: preview),
+                    if (_waitingAnnotated)
+                      Positioned.fill(
+                        child: Container(
+                          color: Colors.black.withOpacity(0.25),
                           child: const Center(
                             child: Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 CircularProgressIndicator(),
                                 SizedBox(height: 10),
-                                Text('Đang chờ ảnh annotated từ ROS...'),
+                                Text(
+                                  'Đang xử lý ảnh / chờ bbox...',
+                                  style: TextStyle(color: Colors.white),
+                                )
                               ],
                             ),
                           ),
                         ),
-                    ],
-                  ),
+                      ),
+                  ],
                 ),
               ),
 
               const SizedBox(height: 12),
 
-              // 2 nút giữ nguyên
               Row(
                 children: [
                   Expanded(
                     child: FilledButton.icon(
-                      onPressed: canShoot ? _captureAndSend : null,
                       icon: const Icon(Icons.camera_alt),
-                      label: const Text('Chụp & gửi'),
+                      label: const Text('Chụp ảnh'),
+                      onPressed: canShoot ? _captureAndSend : null,
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: FilledButton.icon(
+                      icon: const Icon(Icons.photo_library),
+                      label: const Text('Chọn ảnh'),
                       onPressed: canShoot ? _pickFromGalleryAndSend : null,
-                      icon: const Icon(Icons.photo),
-                      label: const Text('Ảnh gallery'),
                     ),
                   ),
                 ],
               ),
 
-              const SizedBox(height: 8),
+              const SizedBox(height: 10),
 
-              // Nút Stream video
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: (connected && _lastPingOk) ? _openStreamPage : null,
-                  icon: const Icon(Icons.videocam),
-                  label: const Text('Stream video'),
-                ),
-              ),
-
-              const SizedBox(height: 12),
-
-              // Nút xem kết quả chi tiết
               SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
                   icon: const Icon(Icons.list_alt),
                   label: const Text('Xem kết quả chi tiết'),
-                  onPressed: _openResultPage,
+                  onPressed: (_waitingAnnotated && _annotatedBytes == null)
+                      ? null
+                      : _openResultPage,
                   style: FilledButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 14),
                   ),

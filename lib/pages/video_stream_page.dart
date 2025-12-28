@@ -23,6 +23,7 @@ String normalizeDiseaseKey(String raw) {
   return s;
 }
 
+/// Giữ lại hàm normalize cũ để tương thích JSON detections realtime (nếu node video của bạn dùng key 'cls')
 Map<String, dynamic> normalizeDetectionsJson(Map<String, dynamic> src) {
   final map = Map<String, dynamic>.from(src);
   final dets = map['detections'];
@@ -78,9 +79,11 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
   int _missingCount = 0;
   final int _maxMissingHold = 3;
 
-  // Tối ưu băng thông: có thể giảm kích thước ảnh gửi mà vẫn giữ tỉ lệ
-  // (Không ép vuông. Nếu bạn muốn giữ nguyên tuyệt đối, set = 0)
+  // Tối ưu băng thông: giảm kích thước ảnh gửi mà vẫn giữ tỉ lệ (0 = giữ nguyên)
   static const int _maxSendWidth = 960;
+
+  // request id cho video frame (để publishJpeg có frameId)
+  int _vidReq = 0;
 
   @override
   void initState() {
@@ -92,8 +95,13 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
         if (!mounted) return;
         setState(() => _status = s);
       },
-      onAnnotatedImage: (_) {},
-      onDetections: (m) {
+
+      // Realtime page này đang vẽ bbox từ JSON detections lên đúng frame đã gửi,
+      // nên annotated image có/không không ảnh hưởng. Nhưng callback phải đúng chữ ký:
+      onAnnotatedImage: (_, __) {},
+
+      // Chữ ký mới: (Map, requestId)
+      onDetections: (m, __) {
         final norm = normalizeDetectionsJson(m);
         final dets = norm['detections'];
 
@@ -117,6 +125,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
 
         if (mounted) setState(() {});
       },
+
       onAnnotatedFrame: null,
     );
 
@@ -141,7 +150,8 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
       }
 
       // Ưu tiên camera sau
-      final back = cams.where((c) => c.lensDirection == CameraLensDirection.back).toList();
+      final back =
+      cams.where((c) => c.lensDirection == CameraLensDirection.back).toList();
       final camDesc = back.isNotEmpty ? back.first : cams.first;
 
       _cam = CameraController(
@@ -179,7 +189,8 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
     _sending = true;
 
     try {
-      final converted = _cameraImageToJpegKeepAspect(image, maxWidth: _maxSendWidth);
+      final converted =
+      _cameraImageToJpegKeepAspect(image, maxWidth: _maxSendWidth);
       if (converted == null) return;
 
       final jpeg = converted.jpeg;
@@ -191,8 +202,10 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
       _frameW = w;
       _frameH = h;
 
-      // gửi ROS
-      _ros.publishJpeg(jpeg);
+      // gửi ROS (chữ ký mới cần frameId)
+      _vidReq++;
+      final frameId = 'vid_$_vidReq';
+      _ros.publishJpeg(jpeg, frameId: frameId);
 
       if (mounted) setState(() {});
     } finally {
@@ -275,7 +288,8 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
               child: Row(
                 children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                    padding:
+                    const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
                     decoration: BoxDecoration(
                       color: Colors.black54,
                       borderRadius: BorderRadius.circular(4),
@@ -313,10 +327,15 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                         )
                       else
                         const Center(
-                          child: Text('Đang lấy frame...', style: TextStyle(color: Colors.white)),
+                          child: Text(
+                            'Đang lấy frame...',
+                            style: TextStyle(color: Colors.white),
+                          ),
                         ),
 
-                      if (_stableDetections != null && _frameW > 0 && _frameH > 0)
+                      if (_stableDetections != null &&
+                          _frameW > 0 &&
+                          _frameH > 0)
                         CustomPaint(
                           painter: _DetectionPainterCover(
                             detections: _stableDetections!,
@@ -327,7 +346,8 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
                     ],
                   )
                       : const Center(
-                    child: Text('Đang mở camera...', style: TextStyle(color: Colors.white)),
+                    child: Text('Đang mở camera...',
+                        style: TextStyle(color: Colors.white)),
                   ),
                 ),
               ),
@@ -372,11 +392,15 @@ class _DetectionPainterCover extends CustomPainter {
     for (final raw in dets) {
       if (raw is! Map) continue;
 
-      final bbox = (raw['bbox'] as List?)?.map((e) => (e as num).toDouble()).toList();
+      // Realtime detections node của bạn đang dùng key 'bbox' + 'cls' + 'score'
+      final bbox = (raw['bbox'] as List?)
+          ?.map((e) => (e as num).toDouble())
+          .toList();
       if (bbox == null || bbox.length != 4) continue;
 
       final cls = (raw['cls'] ?? '').toString();
-      final score = (raw['score'] is num) ? (raw['score'] as num).toDouble() : 0.0;
+      final score =
+      (raw['score'] is num) ? (raw['score'] as num).toDouble() : 0.0;
 
       final x1 = bbox[0] * scale + offsetX;
       final y1 = bbox[1] * scale + offsetY;
@@ -408,6 +432,8 @@ class _DetectionPainterCover extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _DetectionPainterCover oldDelegate) {
-    return oldDelegate.detections != detections || oldDelegate.imgW != imgW || oldDelegate.imgH != imgH;
+    return oldDelegate.detections != detections ||
+        oldDelegate.imgW != imgW ||
+        oldDelegate.imgH != imgH;
   }
 }
