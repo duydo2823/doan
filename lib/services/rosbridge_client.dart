@@ -4,25 +4,33 @@ import 'dart:typed_data';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+/// Client đơn giản cho rosbridge_server.
+/// Hỗ trợ:
+///  - Kết nối / ngắt
+///  - Ping thật sự qua rosapi (để biết rosbridge đã ready)
+///  - Gửi ảnh JPEG lên topic /app/image/compressed
+///  - Nhận ảnh annotated từ /app/annotated/compressed (và /video/annotated nếu có)
+///  - Nhận JSON bbox từ /app/detections_json
 class RosbridgeClient {
   final String url;
 
   final void Function(String status)? onStatus;
 
-  /// annotated jpeg + frameId (header.frame_id)
-  final void Function(Uint8List jpeg, String? frameId)? onAnnotatedImage;
+  /// Ảnh annotated (ROS đã vẽ bounding box) – dùng cho DetectIntroPage
+  final void Function(Uint8List jpeg)? onAnnotatedImage;
 
-  /// detections json + requestId (json['request_id'])
-  final void Function(Map<String, dynamic> json, String? requestId)? onDetections;
+  /// Detections JSON (bbox, cls, score, image size,…)
+  final void Function(Map<String, dynamic> json)? onDetections;
 
-  /// optional for video page
-  final void Function(Uint8List jpeg, String? frameId)? onAnnotatedFrame;
+  /// Nếu bạn dùng trong VideoStreamPage kiểu onAnnotatedFrame
+  final void Function(Uint8List jpeg)? onAnnotatedFrame;
 
   WebSocketChannel? _socket;
   StreamSubscription? _sub;
 
   bool get isConnected => _socket != null;
 
+  // --- ping via rosapi call ---
   int _callId = 0;
   final Map<String, Completer<Map<String, dynamic>>> _pendingCalls = {};
 
@@ -33,6 +41,8 @@ class RosbridgeClient {
     this.onDetections,
     this.onAnnotatedFrame,
   });
+
+  // ================== CONNECT / DISCONNECT ==================
 
   Future<void> connect() async {
     try {
@@ -78,30 +88,36 @@ class RosbridgeClient {
     }
   }
 
+  // ================== ADVERTISE / SUBSCRIBE ==================
+
   void _sendRaw(Map<String, dynamic> msg) {
     if (_socket == null) return;
     _socket!.sink.add(jsonEncode(msg));
   }
 
   void _advertiseAndSubscribe() {
+    // Advertise topic để gửi ảnh lên ROS
     _sendRaw({
       'op': 'advertise',
       'topic': '/app/image/compressed',
       'type': 'sensor_msgs/CompressedImage',
     });
 
+    // Subscribe ảnh annotated (ROS trả về)
     _sendRaw({
       'op': 'subscribe',
       'topic': '/app/annotated/compressed',
       'type': 'sensor_msgs/CompressedImage',
     });
 
+    // Subscribe detections JSON
     _sendRaw({
       'op': 'subscribe',
       'topic': '/app/detections_json',
       'type': 'std_msgs/String',
     });
 
+    // (Tuỳ bạn có video node riêng)
     _sendRaw({
       'op': 'subscribe',
       'topic': '/video/annotated',
@@ -109,26 +125,18 @@ class RosbridgeClient {
     });
   }
 
-  /// Publish JPEG kèm header.frame_id để match request
-  void publishJpeg(
-      Uint8List bytes, {
-        required String frameId,
-      }) {
-    if (_socket == null) return;
+  // ================== PUBLISH JPEG LÊN ROS ==================
 
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
-    final secs = nowMs ~/ 1000;
-    final nsecs = (nowMs % 1000) * 1000000;
+  /// Gửi 1 frame JPEG lên topic /app/image/compressed
+  void publishJpeg(Uint8List bytes) {
+    if (_socket == null) return;
 
     final msg = {
       'op': 'publish',
       'topic': '/app/image/compressed',
       'msg': {
-        'header': {
-          'stamp': {'secs': secs, 'nsecs': nsecs},
-          'frame_id': frameId,
-        },
         'format': 'jpeg',
+        // rosbridge thường mong base64 khi publish
         'data': base64Encode(bytes),
       },
     };
@@ -136,12 +144,16 @@ class RosbridgeClient {
     _socket!.sink.add(jsonEncode(msg));
   }
 
+  // ================== ROSAPI CALL (PING THẬT) ==================
+
   Future<Map<String, dynamic>> _callService({
     required String service,
     Map<String, dynamic>? args,
-    Duration timeout = const Duration(milliseconds: 2500),
+    Duration timeout = const Duration(milliseconds: 1200),
   }) async {
-    if (_socket == null) throw StateError('Socket not connected');
+    if (_socket == null) {
+      throw StateError('Socket not connected');
+    }
 
     _callId++;
     final id = 'call_$_callId';
@@ -155,9 +167,14 @@ class RosbridgeClient {
       'id': id,
     });
 
-    return c.future.timeout(timeout);
+    return c.future.timeout(timeout, onTimeout: () {
+      _pendingCalls.remove(id);
+      throw TimeoutException('call_service timeout: $service');
+    });
   }
 
+  /// Ping thật sự:
+  /// - gọi /rosapi/get_time để biết rosbridge đã ready + RTT tương đối
   Future<(bool, int?)> ping() async {
     if (!isConnected) return (false, null);
 
@@ -172,7 +189,12 @@ class RosbridgeClient {
     }
   }
 
+  // ================== HANDLE MESSAGE TỪ ROS ==================
+
   Uint8List? _decodeCompressedData(dynamic payload) {
+    // ROSBRIDGE có thể trả:
+    // - base64 String
+    // - List<int> (mảng byte)
     if (payload is String) {
       try {
         return base64Decode(payload);
@@ -195,10 +217,13 @@ class RosbridgeClient {
       final jsonData = jsonDecode(data);
       if (jsonData is! Map) return;
 
+      // ====== handle service response (ping) ======
       if (jsonData['op'] == 'service_response' && jsonData['id'] != null) {
         final id = jsonData['id'].toString();
         final c = _pendingCalls.remove(id);
-        if (c != null) c.complete(Map<String, dynamic>.from(jsonData));
+        if (c != null) {
+          c.complete(Map<String, dynamic>.from(jsonData));
+        }
         return;
       }
 
@@ -206,40 +231,34 @@ class RosbridgeClient {
 
       final topic = jsonData['topic'];
       final msg = jsonData['msg'];
-      if (msg is! Map) return;
 
-      // annotated image
+      // Ảnh annotated (đã vẽ bbox)
       if (topic == '/app/annotated/compressed' || topic == '/video/annotated') {
-        String? frameId;
-        final header = msg['header'];
-        if (header is Map && header['frame_id'] != null) {
-          frameId = header['frame_id'].toString();
-        }
-
-        final bytes = _decodeCompressedData(msg['data']);
+        final payload = msg['data'];
+        final bytes = _decodeCompressedData(payload);
         if (bytes != null) {
-          onAnnotatedImage?.call(bytes, frameId);
-          onAnnotatedFrame?.call(bytes, frameId);
+          onAnnotatedImage?.call(bytes);
+          onAnnotatedFrame?.call(bytes);
+        } else {
+          onStatus?.call(
+              'Annotated received but unsupported data type: ${payload.runtimeType}');
         }
         return;
       }
 
-      // detections json
+      // Detections JSON
       if (topic == '/app/detections_json') {
         final String? s = msg['data'];
-        if (s == null) return;
-
-        final decoded = jsonDecode(s);
-        Map<String, dynamic>? map;
-        if (decoded is Map<String, dynamic>) {
-          map = decoded;
-        } else if (decoded is Map) {
-          map = Map<String, dynamic>.from(decoded as Map);
+        if (s != null) {
+          final decoded = jsonDecode(s);
+          if (decoded is Map<String, dynamic>) {
+            onDetections?.call(decoded);
+          } else if (decoded is Map) {
+            onDetections?.call(
+              Map<String, dynamic>.from(decoded as Map<dynamic, dynamic>),
+            );
+          }
         }
-        if (map == null) return;
-
-        final reqId = map['request_id']?.toString();
-        onDetections?.call(map, reqId);
         return;
       }
     } catch (e) {
