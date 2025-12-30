@@ -221,7 +221,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       if (_lastSentBytes != null) {
         _ros.publishJpeg(_lastSentBytes!);
         setState(() {
-          _status = 'Vui lòng đợi... (đang gửi lại để nhận annotated)';
+          _status = 'Vui lòng đợi... ';
         });
       }
     });
@@ -234,7 +234,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
         setState(() {
           _waitingAnnotated = false;
           _status =
-          'Quá thời gian chờ annotated (10s). Kiểm tra ROS / mạng rồi thử lại.';
+          'Quá thời gian. Kiểm tra ROS / mạng rồi thử lại.';
         });
       }
     });
