@@ -70,7 +70,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   Uint8List? _annotatedBytes;
   Map<String, dynamic>? _detections;
 
-  // ---- NEW: đợi annotated để tránh “ảnh đầu không bbox”
+  // ---- đợi annotated để tránh “ảnh đầu không bbox”
   bool _waitingAnnotated = false;
   Timer? _annotatedTimeout;
 
@@ -78,12 +78,10 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   int _reqId = 0;
   int _activeReqId = 0;
 
-  // ===== RESEND 1 LẦN nếu chưa nhận annotated =====
+  // ===== RESEND lặp lại cho đến khi có annotated =====
   Timer? _resendTimer;
-  bool _resentOnce = false;
   Uint8List? _lastSentBytes;
-  int _lastSentReqId = 0;
-  // =============================================
+  // ================================================
 
   String get _rosUrl => 'ws://$ROS_IP:$ROSBRIDGE_PORT';
 
@@ -94,7 +92,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       url: _rosUrl,
       onStatus: (s) => setState(() => _status = s),
       onAnnotatedImage: (jpeg) {
-        // Nếu đang chờ annotated cho request hiện tại -> nhận và stop wait
+        // nhận annotated -> dừng chờ + dừng resend
         if (mounted) {
           setState(() {
             _annotatedBytes = jpeg;
@@ -102,7 +100,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
           });
         }
         _annotatedTimeout?.cancel();
-        _resendTimer?.cancel(); // ✅ nhận rồi thì khỏi resend
+        _resendTimer?.cancel(); // ✅ dừng resend khi đã có annotated
       },
       onDetections: (m) {
         if (!mounted) return;
@@ -115,7 +113,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   void dispose() {
     _stopHeartbeat();
     _annotatedTimeout?.cancel();
-    _resendTimer?.cancel(); // ✅ thêm
+    _resendTimer?.cancel();
     _ros.disconnect();
     super.dispose();
   }
@@ -138,7 +136,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
     try {
       await _ros.connect();
 
-      // ✅ Warm-up: chờ rosbridge ổn định rồi ping 2 lần
+      // Warm-up: chờ rosbridge ổn định rồi ping 2 lần
       await Future.delayed(const Duration(milliseconds: 350));
       await _doPing(silent: true);
       await Future.delayed(const Duration(milliseconds: 250));
@@ -151,7 +149,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
   void _disconnect() {
     _stopHeartbeat();
     _annotatedTimeout?.cancel();
-    _resendTimer?.cancel(); // ✅ thêm
+    _resendTimer?.cancel();
     _ros.disconnect();
     setState(() {
       _lastPingOk = false;
@@ -174,8 +172,11 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
       });
 
       if (!silent && mounted) {
-        final msg = ok ? 'ROS OK • RTT ${rtt ?? '-'}ms' : 'Không thể ping ROS (rosbridge chưa ready?)';
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+        final msg = ok
+            ? 'ROS OK • RTT ${rtt ?? '-'}ms'
+            : 'Không thể ping ROS (rosbridge chưa ready?)';
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(msg)));
       }
     } catch (e) {
       setState(() {
@@ -188,45 +189,52 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
   // ================= GỬI ẢNH LÊN ROS =================
 
-  void _startWaitAnnotated({required int reqId, Uint8List? sentBytes}) {
+  void _startWaitAnnotated({required int reqId, required Uint8List sentBytes}) {
     _annotatedTimeout?.cancel();
     _resendTimer?.cancel();
 
     setState(() {
       _waitingAnnotated = true;
       _activeReqId = reqId;
+      _status = 'Đang gửi ảnh, chờ kết quả từ ROS...';
     });
 
-    // Lưu bytes để có thể resend 1 lần nếu rớt frame đầu
     _lastSentBytes = sentBytes;
-    _resentOnce = false;
-    _lastSentReqId = reqId;
 
-    // ✅ Sau 1.5s nếu vẫn chưa có annotated -> resend đúng 1 lần
-    _resendTimer = Timer(const Duration(milliseconds: 1500), () {
+    // ✅ resend lặp lại mỗi 1.3s cho tới khi nhận annotated hoặc reqId đổi
+    _resendTimer = Timer.periodic(const Duration(milliseconds: 1300), (_) {
       if (!mounted) return;
 
-      // chỉ resend nếu vẫn đang chờ đúng request này
-      if (!_waitingAnnotated) return;
-      if (_activeReqId != reqId) return;
+      // Nếu user gửi ảnh mới hoặc không còn chờ -> dừng
+      if (!_waitingAnnotated || _activeReqId != reqId) {
+        _resendTimer?.cancel();
+        return;
+      }
 
-      if (_annotatedBytes == null && !_resentOnce && _lastSentBytes != null) {
-        _resentOnce = true;
+      // Nếu đã có annotated -> dừng
+      if (_annotatedBytes != null) {
+        _resendTimer?.cancel();
+        return;
+      }
+
+      // resend
+      if (_lastSentBytes != null) {
         _ros.publishJpeg(_lastSentBytes!);
-
         setState(() {
-          _status = 'Vui lòng đợi...';
+          _status = 'Vui lòng đợi... (đang gửi lại để nhận annotated)';
         });
       }
     });
 
-    // Nếu sau 3.5s vẫn chưa có annotated -> stop wait
-    _annotatedTimeout = Timer(const Duration(milliseconds: 3500), () {
+    // ✅ timeout tổng 10s để tránh resend vô hạn khi ROS chết
+    _annotatedTimeout = Timer(const Duration(seconds: 10), () {
       if (!mounted) return;
       if (_waitingAnnotated && _activeReqId == reqId && _annotatedBytes == null) {
+        _resendTimer?.cancel();
         setState(() {
           _waitingAnnotated = false;
-          _status = 'Vui lòng đợi..';
+          _status =
+          'Quá thời gian chờ annotated (10s). Kiểm tra ROS / mạng rồi thử lại.';
         });
       }
     });
@@ -258,15 +266,11 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
       final bytes = await photo.readAsBytes();
 
-      // ✅ Start waiting & setup resend
+      // Start wait + resend loop
       _startWaitAnnotated(reqId: _reqId, sentBytes: bytes);
 
-      // send lần 1
+      // send lần đầu ngay
       _ros.publishJpeg(bytes);
-
-      setState(() {
-        _status = 'Đã gửi ảnh, chờ kết quả từ ROS...';
-      });
     } on PlatformException catch (e) {
       setState(() => _status = 'Không mở camera: ${e.code}');
     } catch (e) {
@@ -300,15 +304,11 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
       final bytes = await file.readAsBytes();
 
-      // ✅ Start waiting & setup resend
+      // Start wait + resend loop
       _startWaitAnnotated(reqId: _reqId, sentBytes: bytes);
 
-      // send lần 1
+      // send lần đầu ngay
       _ros.publishJpeg(bytes);
-
-      setState(() {
-        _status = 'Đã gửi ảnh gallery, chờ kết quả từ ROS...';
-      });
     } catch (e) {
       setState(() => _status = 'Lỗi chọn ảnh: $e');
     }
@@ -340,7 +340,6 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
 
   @override
   Widget build(BuildContext context) {
-    // ✅ Ưu tiên annotated, nhưng nếu đang chờ annotated thì hiển thị overlay “Đang xử lý…”
     Widget preview;
     if (_annotatedBytes != null) {
       preview = Image.memory(_annotatedBytes!, fit: BoxFit.contain);
@@ -364,7 +363,6 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
           padding: const EdgeInsets.all(16),
           child: Column(
             children: [
-              // Trạng thái ROS
               Card(
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
@@ -385,10 +383,13 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                             Text(_status, style: const TextStyle(fontSize: 13)),
                             const SizedBox(height: 4),
                             Text(
-                              _lastPingOk ? 'ROS OK • RTT: ${_lastRttMs ?? '-'}ms' : 'Chưa ping được ROS',
+                              _lastPingOk
+                                  ? 'ROS OK • RTT: ${_lastRttMs ?? '-'}ms'
+                                  : 'Chưa ping được ROS',
                               style: TextStyle(
                                 fontSize: 12,
-                                color: _lastPingOk ? Colors.green : Colors.redAccent,
+                                color:
+                                _lastPingOk ? Colors.green : Colors.redAccent,
                               ),
                             ),
                           ],
@@ -406,7 +407,8 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                           const SizedBox(height: 4),
                           OutlinedButton(
                             onPressed: connected ? () => _doPing() : null,
-                            child: const Text('Ping', style: TextStyle(fontSize: 12)),
+                            child: const Text('Ping',
+                                style: TextStyle(fontSize: 12)),
                           ),
                         ],
                       ),
@@ -414,10 +416,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                   ),
                 ),
               ),
-
               const SizedBox(height: 12),
-
-              // Ảnh preview + trạng thái “đang chờ annotated”
               Expanded(
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
@@ -446,10 +445,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                   ),
                 ),
               ),
-
               const SizedBox(height: 12),
-
-              // 2 nút giữ nguyên
               Row(
                 children: [
                   Expanded(
@@ -469,10 +465,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                   ),
                 ],
               ),
-
               const SizedBox(height: 8),
-
-              // Nút Stream video
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
@@ -481,10 +474,7 @@ class _DetectIntroPageState extends State<DetectIntroPage> {
                   label: const Text('Stream video'),
                 ),
               ),
-
               const SizedBox(height: 12),
-
-              // Nút xem kết quả chi tiết
               SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
