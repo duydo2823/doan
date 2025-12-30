@@ -156,7 +156,7 @@ class _VideoStreamPageState extends State<VideoStreamPage> {
 
       setState(() {
         _cameraReady = true;
-        _status = 'Camera OK • Đang stream & gửi lên ROS...';
+        _status = 'Đưa camera vào lá bị bệnh...';
       });
 
       _lastSent = DateTime.now();

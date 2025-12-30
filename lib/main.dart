@@ -106,7 +106,7 @@ class HomePage extends StatelessWidget {
                         const SizedBox(width: 8),
                         const Expanded(
                           child: Text(
-                            'Kết nối cụm xử lý Jetson Nano / ROS2, hỗ trợ nhận diện ảnh tĩnh và stream video.',
+                            'Hỗ trợ nhận diện ảnh tĩnh và stream video.',
                             style: TextStyle(fontSize: 13),
                           ),
                         ),
